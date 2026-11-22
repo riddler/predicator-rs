@@ -150,11 +150,14 @@ imported as the library `predicator_rs` (`use predicator_rs::...`), ruled by
 the operator, 2026-11-20. Its first real release is 0.1.0; any earlier
 version on crates.io is a placeholder that reserves the name.
 
-The tree on `main` today holds these agent instructions, the wurk manifest
-and the tracker files, and nothing else. The crate scaffold and the gate
-(`Cargo.toml`, `mise.toml`, `deny.toml`), CI (`.github/workflows/ci.yml`),
-the release workflow (`.github/workflows/release.yml`), the vendored
-conformance corpus, the library and its README arrive with later changes.
+The tree on `main` today holds these agent instructions, the wurk manifest,
+the tracker files and a `.gitignore`, and nothing else. The crate scaffold
+and the gate (`Cargo.toml`, `mise.toml`, `deny.toml`), CI
+(`.github/workflows/ci.yml`), the release workflow
+(`.github/workflows/release.yml`), the vendored conformance corpus, the
+library and its README arrive with later changes. The gate rules and
+conventions below describe that scaffold as it will land; until it does,
+there is no gate to run and no lint to deny anything.
 
 - **The crate is `predicator-rs`, the library `predicator_rs`.** It is MIT
   licensed, builds on Rust 1.85 or later (edition 2024), and uses `std`
