@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 /// A map key: one of the four kinds the reference's instruction-set text
 /// lets index a map, a string, an integer, a boolean or undefined. (`null`
-/// is not one: the text makes a `null` key a type mismatch.)
+/// is not one of the four; a lookup by `null` is a miss, not an error.)
 ///
 /// Keys are totally ordered: undefined first, then `false` and `true`, then
 /// integers in numeric order, then strings in codepoint order. A map keeps
