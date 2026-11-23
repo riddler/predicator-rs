@@ -12,13 +12,15 @@ usable version is 0.1.0. What the source holds so far is the value model
 tagged-value encoding (`tagged`), and the evaluator:
 `evaluate` runs an instruction list (`Instructions`, read from JSON in the
 tagged encoding) over a `Context`, with `Options` passed per call. It runs
-the instruction set's first five tiers: `lit`, `load`, `compare`, `not`,
+every tier of the instruction set but casts (tier 7) and presence and
+overlap (tier 10): `lit`, `load`, `compare`, `not`,
 `unary_bang`, `unary_minus`, `jump_if_falsy_or_pop` and
 `jump_if_true_or_pop`; the arithmetic `add`, `subtract`, `multiply`,
 `divide` and `modulo`; `access`, `bracket_access`, `in`, `contains` and
 `make_list`; `object_new`, `object_set`, `duration` and
-`relative_date`; and `call`. It refuses every other opcode as `unknown_instruction` until a
-later version adds it (the retired `and` and `or` as `retired_opcode`). A variable the context does not bind
+`relative_date`; `call`; `store` and `pop`; `jump` and
+`pop_jump_if_falsy`; and `jump_backward`. It refuses every other opcode as
+`unknown_instruction` until a later version adds it (the retired `and` and `or` as `retired_opcode`). A variable the context does not bind
 reads as undefined, and the evaluation fails with an `UndefinedVariableError`
 when undefined is its answer or an instruction refuses it; with
 `Options::new().on_unbound(OnUnbound::Error)` the load itself fails.
@@ -63,6 +65,68 @@ callable answering 64 random bits; without one it draws from a source seeded
 from the standard library's per-process hash keys, which needs no
 dependency and is not cryptographic. `Date.now` reads the run's clock, as
 `relative_date` does.
+
+## Statement programs
+
+`execute` runs an instruction list as a statement program: its `store`s
+write the context, and its answer is the context it leaves rather than a
+value. The context passed in is never changed; a run writes a copy. A run
+that completes answers an `Execution`; one that stops answers a `Stopped`,
+which holds the error it stopped on, the context as of the last statement
+it completed (every earlier write kept, the failing write not made) and the
+roots it had stored into. Keeping that context or the one passed in is the
+caller's choice. A `Stopped` converts into its `Error`, so `?` takes it
+where only the error matters.
+
+```rust
+use predicator_rs::{Context, Error, Instructions, Key, Options, Value, execute};
+
+fn main() -> Result<(), Error> {
+    // x = 1; y = x + 2
+    let program = Instructions::from_json(
+        r#"[["lit","x"],["lit",1],["store",1],["lit","y"],["load","x"],["lit",2],["add"],["store",1]]"#,
+    )?;
+    let execution = execute(&program, &Context::new(), &Options::new())?;
+    assert_eq!(execution.context().get(&Key::from("y")), Some(&Value::from(3)));
+    assert_eq!(execution.stored_roots(), [Key::from("x"), Key::from("y")]);
+
+    // a = 1; a.b = 2 stops at the second statement, keeping the first.
+    let program = Instructions::from_json(
+        r#"[["lit","a"],["lit",1],["store",1],["lit","a"],["lit","b"],["lit",2],["store",2]]"#,
+    )?;
+    let stopped = execute(&program, &Context::new(), &Options::new()).unwrap_err();
+    assert_eq!(stopped.error().reason(), "not_a_container");
+    assert_eq!(stopped.context().get(&Key::from("a")), Some(&Value::from(1)));
+    Ok(())
+}
+```
+
+`execute_value` does the same and also answers the value of the program's
+last expression statement (`Execution::value`): what its last `pop`
+discarded, or undefined when it popped nothing.
+
+`store` writes as the reference's instruction-set text states it: an
+interior slot that is missing, `null` or undefined becomes a list when the
+segment after it is an integer and a map otherwise; an index past a list's
+end pads it with undefined; the leaf is overwritten. An integer segment
+into a map is an integer key. A path through a scalar, a date or an
+instant is refused as `not_a_container`, a negative index as
+`invalid_index`, and an empty path as `not_assignable`; a segment that is
+neither a string nor an integer is a `TypeMismatchError`. A write that is
+refused leaves nothing of itself behind.
+
+`Options::new().protected_roots(["locked"])` names roots a statement
+program may not store into: a `store` whose path's root is one of them is
+refused when it is reached, with an `EvaluationError`, reason
+`protected_root`, whose `root()` names the root. A root is protected whole,
+and the check comes after the path's segments are checked, as the
+reference makes it.
+
+A run may take as many back edges (`jump_backward`) as its loop budget
+allows, 10,000 unless `Options::new().loop_budget(..)` says otherwise; a
+run that reaches a back edge with none left fails there with an
+`EvaluationError`, reason `loop_budget_exceeded`. The budget bounds
+`evaluate` and `execute` alike.
 
 ## Differences from the reference
 
@@ -202,3 +266,24 @@ code says otherwise, or has no counterpart in the reference:
   with the reason `depth_limit_exceeded`; the reference has no bound. A
   deeper value the host builds is still compared, copied and dropped without
   recursion.
+- **`execute` answers the roots a run stored into** (`stored_roots`), each
+  once in the order of its first store, whether or not a store changed the
+  value there. The reference has no such answer; its callers compare the
+  context before and after. `Execution::value` is `None` from `execute`
+  and the last expression statement's value from `execute_value`.
+- **`evaluate` does not read the protected roots.** A `store` in an
+  instruction list `evaluate` runs writes whatever its root; the
+  reference's documentation says the option matters to its statement entry
+  point alone, while its code reads it in an instruction list its
+  expression entry point runs too.
+- **A store through a date or an instant is refused** with the reason
+  `not_a_container`, as the reference's instruction-set text states it for
+  an interior slot that holds a scalar; the reference's code holds those
+  two as maps and writes the key into them.
+- **A store through a duration writes into the plain map of its eight
+  units**, so the slot holds a map afterwards, whatever the key. The
+  reference's code writes the key into the duration's own map.
+- **A store makes a list at most 1,048,576 (2^20) items long.** An index
+  past a list's end at or beyond that is refused with an `EvaluationError`,
+  reason `list_too_long`; a list already longer may be written inside its
+  end. The reference pads to any index.

@@ -11,21 +11,28 @@
 //! The arithmetic instructions live in `arithmetic`, reading into a value
 //! (`access`, `bracket_access`) and the containment `in` and `contains`
 //! share in `access`, the rich types (`object_new`, `object_set`,
-//! `duration`, `relative_date`) in `rich`, and the function library `call`
-//! runs in `library`.
+//! `duration`, `relative_date`) in `rich`, the function library `call`
+//! runs in `library`, and the write `store` makes in `store`.
+//!
+//! One machine runs both of the instruction set's modes: [`evaluate`]
+//! (expression mode) answers the top of the stack, and [`execute`] and
+//! [`execute_value`] (statement mode) answer the context the run leaves.
 
 mod access;
 mod arithmetic;
 mod library;
 mod rich;
+mod store;
 
 use crate::compare::{self, Operator};
 use crate::options::OnUnbound;
 use crate::{
-    Context, Error, EvaluationError, Instructions, Options, TypeMismatchError,
-    UndefinedVariableError, Value,
+    Context, Error, EvaluationError, Execution, Instructions, Key, Options, Stopped,
+    TypeMismatchError, UndefinedVariableError, Value,
 };
 use arithmetic::Arithmetic;
+use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
 
@@ -74,6 +81,11 @@ enum Op<'a> {
     Duration(&'a [Value]),
     RelativeDate(&'a str),
     Call(&'a str, usize),
+    Store(usize),
+    Pop,
+    Jump(usize),
+    PopJumpIfFalsy(usize),
+    JumpBackward(usize),
 }
 
 /// One row of the dispatch table: an opcode's name and the reader of its
@@ -177,6 +189,26 @@ const OPCODES: &[Row] = &[
         name: "call",
         read: read_call,
     },
+    Row {
+        name: "store",
+        read: read_store,
+    },
+    Row {
+        name: "pop",
+        read: |operands| bare(operands, Op::Pop),
+    },
+    Row {
+        name: "jump",
+        read: |operands| offset(operands).map(Op::Jump),
+    },
+    Row {
+        name: "pop_jump_if_falsy",
+        read: |operands| offset(operands).map(Op::PopJumpIfFalsy),
+    },
+    Row {
+        name: "jump_backward",
+        read: |operands| offset(operands).map(Op::JumpBackward),
+    },
 ];
 
 /// The opcodes the instruction set has retired, each with the version that
@@ -228,6 +260,17 @@ fn read_call(operands: &[Value]) -> Option<Op<'_>> {
     }
 }
 
+/// `store`'s count of path segments: one non-negative integer. A count
+/// past the address space asks for more values than any stack holds.
+fn read_store(operands: &[Value]) -> Option<Op<'_>> {
+    match operands {
+        [Value::Integer(count)] if *count >= 0 => {
+            Some(Op::Store(usize::try_from(*count).unwrap_or(usize::MAX)))
+        }
+        _ => None,
+    }
+}
+
 fn read_compare(operands: &[Value]) -> Option<Op<'_>> {
     match operands {
         [Value::String(name)] => Operator::named(name).map(Op::Compare),
@@ -268,14 +311,16 @@ fn offset(operands: &[Value]) -> Option<usize> {
     }
 }
 
+/// The refusal of an instruction this build cannot run.
+fn unknown(name: &str) -> EvaluationError {
+    EvaluationError::new(
+        "unknown_instruction",
+        format!("unknown instruction: {name}"),
+    )
+}
+
 /// Reads `instruction`: its opcode by name first, then its operands.
 fn decode(instruction: &Value) -> Result<Op<'_>, EvaluationError> {
-    let unknown = |name: &str| {
-        EvaluationError::new(
-            "unknown_instruction",
-            format!("unknown instruction: {name}"),
-        )
-    };
     let Value::List(parts) = instruction else {
         return Err(unknown("an instruction that is not a list"));
     };
@@ -312,8 +357,20 @@ impl From<EvaluationError> for Fault {
 
 /// The machine's state over one run.
 struct Machine<'a> {
-    context: &'a Context,
+    /// The context the run reads, copied the first time a `store` writes
+    /// it.
+    context: Cow<'a, Context>,
     options: &'a Options<'a>,
+    /// Whether a `store` reads the protected roots: statement mode only.
+    protect: bool,
+    /// The back edges the run may still take.
+    budget: u64,
+    /// The roots the run stored into, in the order of the first store, and
+    /// the same roots as a set.
+    stored: Vec<Key>,
+    stored_set: BTreeSet<Key>,
+    /// What the last `pop` discarded.
+    last: Value,
     on_unbound: OnUnbound,
     /// The current time, once this run has read the clock.
     now: Option<crate::DateTime>,
@@ -382,16 +439,68 @@ fn mismatch_pair(operation: &str, wanted: &str, left: &Value, right: &Value) -> 
 }
 
 impl<'a> Machine<'a> {
-    /// Runs `list` from its first instruction to its end and answers the
-    /// top of the stack.
-    fn run(&mut self, list: &'a [Value]) -> Result<Value, Fault> {
+    /// A machine about to run over `context` with `options`; `protect` says
+    /// whether a `store` reads the protected roots.
+    fn new(context: &'a Context, options: &'a Options<'a>, protect: bool) -> Machine<'a> {
+        Machine {
+            context: Cow::Borrowed(context),
+            options,
+            protect,
+            budget: options.loop_budget,
+            stored: Vec::new(),
+            stored_set: BTreeSet::new(),
+            last: Value::Undefined,
+            on_unbound: options.on_unbound,
+            now: None,
+            stack: Vec::new(),
+            unbound: None,
+            random: None,
+        }
+    }
+
+    /// Runs `list` from its first instruction until the instruction pointer
+    /// reaches or passes its end.
+    fn run(&mut self, list: &'a [Value]) -> Result<(), Fault> {
         let mut at = 0;
         while let Some(instruction) = list.get(at) {
             at = self.step(decode(instruction)?, at)?;
         }
-        self.stack.pop().ok_or_else(|| {
-            EvaluationError::new("empty_stack", "the run ended with nothing on the stack").into()
-        })
+        Ok(())
+    }
+
+    /// `store`: pops the value, then `count` path segments beneath it (the
+    /// root deepest), and writes the value at that path. A path whose root
+    /// the options protect is refused, in statement mode, after its
+    /// segments are checked and before anything is written.
+    fn store(&mut self, count: usize) -> Result<(), Fault> {
+        let wanted = count.saturating_add(1);
+        let at = self
+            .stack
+            .len()
+            .checked_sub(wanted)
+            .ok_or_else(|| insufficient("store", wanted))?;
+        let mut taken = self.stack.split_off(at);
+        let value = taken.pop().unwrap_or(Value::Undefined);
+        let path = store::segments(&taken)?;
+        let root = path.first().copied();
+        if let Some(store::Segment::Key(name)) = root {
+            if self.protect && self.options.protects(name) {
+                return Err(EvaluationError::new(
+                    "protected_root",
+                    format!("store cannot write the protected root {name}"),
+                )
+                .with_root(name)
+                .into());
+            }
+        }
+        store::check(self.context.bindings(), &path)?;
+        store::write(self.context.to_mut().bindings_mut(), &path, value);
+        if let Some(root) = root.map(store::Segment::key) {
+            if self.stored_set.insert(root.clone()) {
+                self.stored.push(root);
+            }
+        }
+        Ok(())
     }
 
     /// Runs one instruction at `at` and answers where the next one is.
@@ -483,6 +592,36 @@ impl<'a> Machine<'a> {
                 let arguments = self.stack.split_off(at);
                 let answer = self.call(name, &arguments)?;
                 self.stack.push(answer);
+            }
+            Op::Store(count) => self.store(count)?,
+            Op::Pop => {
+                self.last = self.stack.pop().ok_or_else(|| insufficient("pop", 1))?;
+            }
+            Op::Jump(offset) => return Ok(at.saturating_add(offset)),
+            Op::PopJumpIfFalsy(offset) => {
+                let top = self
+                    .stack
+                    .pop()
+                    .ok_or_else(|| insufficient("pop_jump_if_falsy", 1))?;
+                match top {
+                    Value::Bool(true) => {}
+                    Value::Bool(false) | Value::Null | Value::Undefined => {
+                        return Ok(at.saturating_add(offset));
+                    }
+                    other => return Err(mismatch("pop_jump_if_falsy", "boolean", &other)),
+                }
+            }
+            Op::JumpBackward(offset) => {
+                let target = at
+                    .checked_sub(offset)
+                    .ok_or_else(|| unknown("jump_backward to before the first instruction"))?;
+                self.budget = self.budget.checked_sub(1).ok_or_else(|| {
+                    EvaluationError::new(
+                        "loop_budget_exceeded",
+                        "the loop budget is spent at a backward jump",
+                    )
+                })?;
+                return Ok(target);
             }
             Op::JumpIfFalsyOrPop(offset) => {
                 if !self.condition("jump_if_falsy_or_pop")? {
@@ -627,6 +766,12 @@ fn unbound(name: &str) -> UndefinedVariableError {
 /// instead with an [`UndefinedVariableError`] (reason `unbound_variable`)
 /// naming the first unbound variable it loaded, when it loaded one.
 ///
+/// The run may take as many back edges (the `jump_backward` instruction)
+/// as [`Options::loop_budget`] says, and fails with the reason
+/// `loop_budget_exceeded` at one past that. A `store` writes a copy of
+/// the context that later instructions in the run read; the context passed
+/// in is never changed, and [`Options::protected_roots`] is not read.
+///
 /// Before anything runs, every value the context binds is checked against
 /// the value domain ([`Context`]).
 ///
@@ -653,28 +798,148 @@ pub fn evaluate<P: Program>(
 ) -> Result<Value, Error> {
     let instructions = program.resolve()?;
     context.check()?;
-    let mut machine = Machine {
-        context,
-        options,
-        on_unbound: options.on_unbound,
-        now: None,
-        stack: Vec::new(),
-        unbound: None,
-        random: None,
-    };
-    let outcome = machine.run(&instructions.list);
-    let unbound_error = |first: Option<&str>| first.map(|name| Error::from(unbound(name)));
+    let mut machine = Machine::new(context, options, false);
+    let outcome = machine.run(&instructions.list).and_then(|()| {
+        machine.stack.pop().ok_or_else(|| {
+            EvaluationError::new("empty_stack", "the run ended with nothing on the stack").into()
+        })
+    });
     match outcome {
-        Ok(Value::Undefined) => match unbound_error(machine.unbound) {
-            Some(error) => Err(error),
+        Ok(Value::Undefined) => match machine.unbound {
+            Some(name) => Err(unbound(name).into()),
             None => Ok(Value::Undefined),
         },
         Ok(value) => Ok(value),
-        Err(Fault::RejectedUndefined(error)) => {
-            Err(unbound_error(machine.unbound).unwrap_or_else(|| error.into()))
-        }
-        Err(Fault::Error(error)) => Err(error),
+        Err(fault) => Err(fault_error(fault, machine.unbound)),
     }
+}
+
+/// The error a run that stopped on `fault` answers: a refused undefined
+/// operand is reported as the first unbound variable the run loaded, when it
+/// loaded one.
+fn fault_error(fault: Fault, first_unbound: Option<&str>) -> Error {
+    match fault {
+        Fault::RejectedUndefined(error) => match first_unbound {
+            Some(name) => unbound(name).into(),
+            None => error.into(),
+        },
+        Fault::Error(error) => error,
+    }
+}
+
+/// Runs `program` over `context` in statement mode, keeping what the last
+/// `pop` discarded when `keep_value` says so.
+fn statements<P: Program>(
+    program: P,
+    context: &Context,
+    options: &Options,
+    keep_value: bool,
+) -> Result<Execution, Stopped> {
+    let refused = |error: Error| Stopped {
+        error: Box::new(error),
+        context: context.clone(),
+        stored_roots: Vec::new(),
+    };
+    let instructions = program.resolve().map_err(refused)?;
+    context.check().map_err(|error| refused(error.into()))?;
+    let mut machine = Machine::new(context, options, true);
+    let outcome = machine.run(&instructions.list);
+    let Machine {
+        context: left,
+        stored,
+        last,
+        unbound: first_unbound,
+        ..
+    } = machine;
+    let context = left.into_owned();
+    match outcome {
+        Ok(()) => Ok(Execution {
+            context,
+            value: keep_value.then_some(last),
+            stored_roots: stored,
+        }),
+        Err(fault) => Err(Stopped {
+            error: Box::new(fault_error(fault, first_unbound)),
+            context,
+            stored_roots: stored,
+        }),
+    }
+}
+
+/// Runs `program` over `context` as a statement program and answers the
+/// context it leaves, with the roots it stored into.
+///
+/// The program is an `&`[`Instructions`]. It runs in statement mode, as the
+/// reference's instruction-set text states it: from its first instruction
+/// to its end, its `store`s writing a copy of `context` (the one passed in
+/// is never changed), and what is left on the stack at the end is
+/// discarded. A run answers an [`Execution`]: the context it left and
+/// [`Execution::stored_roots`], the roots it stored into in the order of
+/// its first store.
+///
+/// A run that stops answers a [`Stopped`]: the [`Error`] it stopped on, the
+/// context as of the last statement it completed (every earlier write kept,
+/// the failing write not made) and the roots it had stored into. A
+/// `Stopped` converts into its `Error`, so `?` takes it where only the
+/// error matters.
+///
+/// The [`Options`] are read as [`evaluate`] reads them, and two more:
+/// [`Options::loop_budget`] bounds the back edges a run takes, as it does
+/// for [`evaluate`], and [`Options::protected_roots`] names the roots a
+/// `store` is refused for (reason `protected_root`). A variable the context
+/// does not bind is read as [`evaluate`] reads it, and a refused undefined
+/// operand is reported as the first unbound variable the run loaded; the
+/// run's answer is the context, so an undefined value is never one.
+///
+/// Before anything runs, every value the context binds is checked against
+/// the value domain ([`Context`]).
+///
+/// ```
+/// use predicator_rs::{Context, Instructions, Key, Options, Value, execute};
+///
+/// // x = 1; y = x + 2
+/// let program = Instructions::from_json(
+///     r#"[["lit","x"],["lit",1],["store",1],["lit","y"],["load","x"],["lit",2],["add"],["store",1]]"#,
+/// )?;
+/// let given = Context::new();
+/// let execution = execute(&program, &given, &Options::new())?;
+/// assert_eq!(execution.context().get(&Key::from("y")), Some(&Value::from(3)));
+/// assert_eq!(execution.stored_roots(), [Key::from("x"), Key::from("y")]);
+/// assert_eq!(given, Context::new());
+/// # Ok::<(), predicator_rs::Error>(())
+/// ```
+pub fn execute<P: Program>(
+    program: P,
+    context: &Context,
+    options: &Options,
+) -> Result<Execution, Stopped> {
+    statements(program, context, options, false)
+}
+
+/// Runs `program` over `context` as [`execute`] does, and also answers the
+/// value of its last expression statement: what its last `pop` discarded,
+/// or undefined when it popped nothing ([`Execution::value`]).
+///
+/// A run that stops answers a [`Stopped`], exactly as [`execute`]'s does,
+/// with no value.
+///
+/// ```
+/// use predicator_rs::{Context, Instructions, Options, Value, execute_value};
+///
+/// // x = 2; x * 10
+/// let program = Instructions::from_json(
+///     r#"[["lit","x"],["lit",2],["store",1],["load","x"],["lit",10],["multiply"],["pop"]]"#,
+/// )?;
+/// let execution = execute_value(&program, &Context::new(), &Options::new())?;
+/// assert_eq!(execution.value(), Some(&Value::from(20)));
+/// # Ok::<(), predicator_rs::Error>(())
+/// ```
+pub fn execute_value<P: Program>(
+    program: P,
+    context: &Context,
+    options: &Options,
+) -> Result<Execution, Stopped> {
+    statements(program, context, options, true)
 }
 
 #[cfg(test)]
@@ -758,6 +1023,15 @@ mod tests {
             r#"[["lit",[1]],["lit",1],["contains",null]]"#,
             r#"[["make_list",-1]]"#,
             r#"[["make_list",1.0]]"#,
+            r#"[["lit",1],["store",-1]]"#,
+            r#"[["lit",1],["store","1"]]"#,
+            r#"[["lit",1],["store"]]"#,
+            r#"[["lit",1],["pop",1]]"#,
+            r#"[["jump",0]]"#,
+            r#"[["jump",-2]]"#,
+            r#"[["lit",true],["pop_jump_if_falsy",0]]"#,
+            r#"[["lit",1],["jump_backward",-1]]"#,
+            r#"[["lit",1],["jump_backward",1.0]]"#,
             r#"[["make_list"]]"#,
         ] {
             assert_eq!(refusal(text), evaluation("unknown_instruction"), "{text}");
@@ -1226,5 +1500,109 @@ mod tests {
             error,
             Some(("EvaluationError".to_owned(), "non_finite_number".to_owned()))
         );
+    }
+
+    // Sabotage: with pop_jump_if_falsy reading its condition without
+    // popping it, this test fails.
+    #[test]
+    fn pop_jump_if_falsy_pops_always_and_jumps_on_a_falsy_value() {
+        let taken = |condition: &str| {
+            run(&format!(
+                r#"[["lit","kept"],["lit",{condition}],["pop_jump_if_falsy",2],["lit","fell"]]"#
+            ))
+        };
+        for falsy in ["false", "null", r#"{"$type":"undefined"}"#] {
+            assert_eq!(taken(falsy).unwrap(), Value::from("kept"), "{falsy}");
+        }
+        assert_eq!(taken("true").unwrap(), Value::from("fell"));
+        assert_eq!(
+            refusal(r#"[["lit",0],["pop_jump_if_falsy",1]]"#),
+            mismatched("pop_jump_if_falsy")
+        );
+        assert_eq!(
+            refusal(r#"[["pop_jump_if_falsy",1]]"#),
+            evaluation("insufficient_operands")
+        );
+        assert_eq!(
+            run(r#"[["lit",1],["jump",2],["bogus"],["lit",2]]"#).unwrap(),
+            Value::from(2)
+        );
+        assert_eq!(
+            run(r#"[["lit",1],["jump",9223372036854775807],["bogus"]]"#).unwrap(),
+            Value::from(1)
+        );
+    }
+
+    // Sabotage: with jump_backward's target check made after the budget is
+    // spent, this test fails.
+    #[test]
+    fn jump_backward_before_the_first_instruction_is_unknown_before_the_budget_is_read() {
+        let none = Options::new().loop_budget(0);
+        let at = |text: &str| {
+            run_with(text, &Context::new(), &none)
+                .err()
+                .map(|error| (error.type_name().to_owned(), error.reason().to_owned()))
+        };
+        assert_eq!(
+            at(r#"[["lit",1],["jump_backward",2]]"#),
+            Some(evaluation("unknown_instruction"))
+        );
+        assert_eq!(
+            at(r#"[["lit",1],["jump_backward",1]]"#),
+            Some(evaluation("loop_budget_exceeded"))
+        );
+        // A back edge to the first instruction is in range.
+        let once = Options::new().loop_budget(1);
+        assert_eq!(
+            run_with(
+                r#"[["lit",1],["pop_jump_if_falsy",3],["lit",false],["jump_backward",3],["lit",0]]"#,
+                &Context::new(),
+                &once
+            )
+            .unwrap_err()
+            .reason(),
+            "pop_jump_if_falsy"
+        );
+    }
+
+    // Sabotage: with store reading its segments top first (leaf first),
+    // this test fails.
+    #[test]
+    fn store_pops_the_value_then_its_segments_and_writes_root_first() {
+        assert_eq!(
+            run(r#"[["lit","a"],["lit","b"],["lit",1],["store",2],["load","a"]]"#).unwrap(),
+            Value::Map([("b", Value::from(1))].into_iter().collect())
+        );
+        assert_eq!(
+            run(r#"[["lit","rest"],["lit","x"],["lit",1],["store",1],["pop"],["load","x"]]"#)
+                .unwrap(),
+            Value::from(1)
+        );
+        assert_eq!(
+            refusal(r#"[["lit",1],["store",0]]"#),
+            evaluation("not_assignable")
+        );
+        assert_eq!(
+            refusal(r#"[["lit","x"],["store",1]]"#),
+            evaluation("insufficient_operands")
+        );
+        assert_eq!(
+            refusal(r#"[["lit","x"],["store",9223372036854775807]]"#),
+            evaluation("insufficient_operands")
+        );
+        assert_eq!(
+            refusal(r#"[["lit",true],["lit",1],["store",1]]"#),
+            mismatched("store")
+        );
+        // An undefined segment from an unbound load is reported as the
+        // unbound variable.
+        assert_eq!(
+            refusal(r#"[["load","missing"],["lit",1],["store",1]]"#),
+            (
+                "UndefinedVariableError".to_owned(),
+                "unbound_variable".to_owned()
+            )
+        );
+        assert_eq!(refusal(r#"[["pop"]]"#), evaluation("insufficient_operands"));
     }
 }

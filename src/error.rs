@@ -33,6 +33,7 @@ macro_rules! error_type {
             reason: String,
             message: String,
             position: Option<Position>,
+            root: Option<String>,
         }
 
         impl $name {
@@ -43,6 +44,7 @@ macro_rules! error_type {
                     reason: reason.into(),
                     message: message.into(),
                     position: None,
+                    root: None,
                 }
             }
 
@@ -115,6 +117,27 @@ error_type! {
     /// assert_eq!(error.position(), None);
     /// ```
     EvaluationError, Evaluation
+}
+
+impl EvaluationError {
+    /// The context root a refusal names, when it names one: the root a
+    /// `store` was refused because the options protect it (reason
+    /// `protected_root`; [`Options::protected_roots`](crate::Options::protected_roots)).
+    ///
+    /// ```
+    /// use predicator_rs::EvaluationError;
+    ///
+    /// assert_eq!(EvaluationError::new("division_by_zero", "the divisor is zero").root(), None);
+    /// ```
+    pub fn root(&self) -> Option<&str> {
+        self.root.as_deref()
+    }
+
+    /// The same error naming `root` as the root it refuses.
+    pub(crate) fn with_root(mut self, root: impl Into<String>) -> Self {
+        self.root = Some(root.into());
+        self
+    }
 }
 
 error_type! {
