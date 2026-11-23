@@ -1,6 +1,6 @@
 {
 "claims": [
-{"surface":"evaluator","tier":3}
+{"surface":"evaluator","tier":4}
 ],
 "corpus_hash": "sha256:2eebecf5b5493aaed4ddfd5ac7926ef05211c4d57b6c27eda7724320486b7686",
 "entries": [
@@ -156,6 +156,28 @@
 {"case_id":"membership/or-over-null-container-undefined","surface":"evaluator","tier":3},
 {"case_id":"short_circuit/undefined-and-x-short-circuits-to-undefined","surface":"evaluator","tier":3},
 {"case_id":"short_circuit/undefined-or-x-falls-through-to-x","surface":"evaluator","tier":3},
+{"case_id":"arithmetic/date-plus-duration","surface":"evaluator","tier":4},
+{"case_id":"durations/date-minus-duration","surface":"evaluator","tier":4},
+{"case_id":"durations/datetime-plus-duration","surface":"evaluator","tier":4},
+{"case_id":"durations/fractional-literal-expands","surface":"evaluator","tier":4},
+{"case_id":"durations/fractional-month-uses-approximation","surface":"evaluator","tier":4},
+{"case_id":"durations/invalid-format","surface":"evaluator","tier":4},
+{"case_id":"durations/invalid-unit","surface":"evaluator","tier":4},
+{"case_id":"durations/later-unit-pair-overwrites-earlier","surface":"evaluator","tier":4},
+{"case_id":"durations/milliseconds-key-present-only-when-used","surface":"evaluator","tier":4},
+{"case_id":"durations/multi-unit","surface":"evaluator","tier":4},
+{"case_id":"durations/single-unit","surface":"evaluator","tier":4},
+{"case_id":"errors/object-set-non-map-target","surface":"evaluator","tier":4},
+{"case_id":"library/pickup-window","surface":"evaluator","tier":4},
+{"case_id":"membership/contains-duration-container","surface":"evaluator","tier":4},
+{"case_id":"membership/contains-object-container","surface":"evaluator","tier":4},
+{"case_id":"membership/in-duration-container","surface":"evaluator","tier":4},
+{"case_id":"membership/in-object-container","surface":"evaluator","tier":4},
+{"case_id":"objects/equality-by-structure","surface":"evaluator","tier":4},
+{"case_id":"objects/literal-multi-key","surface":"evaluator","tier":4},
+{"case_id":"objects/literal-nested","surface":"evaluator","tier":4},
+{"case_id":"objects/literal-single-key","surface":"evaluator","tier":4},
+{"case_id":"objects/strict-equality-by-structure","surface":"evaluator","tier":4},
 {"case_id":"loops/jump-backward-past-start-is-unknown-instruction","surface":"evaluator","tier":9},
 {"case_id":"loops/jump-backward-zero-offset-is-unknown-instruction","surface":"evaluator","tier":9}
 ],

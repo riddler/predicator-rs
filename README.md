@@ -12,15 +12,23 @@ usable version is 0.1.0. What the source holds so far is the value model
 tagged-value encoding (`tagged`), and the evaluator's first tier:
 `evaluate` runs an instruction list (`Instructions`, read from JSON in the
 tagged encoding) over a `Context`, with `Options` passed per call. It runs
-the instruction set's first three tiers: `lit`, `load`, `compare`, `not`,
+the instruction set's first four tiers: `lit`, `load`, `compare`, `not`,
 `unary_bang`, `unary_minus`, `jump_if_falsy_or_pop` and
 `jump_if_true_or_pop`; the arithmetic `add`, `subtract`, `multiply`,
-`divide` and `modulo`; and `access`, `bracket_access`, `in`, `contains` and
-`make_list`. It refuses every other opcode as `unknown_instruction` until a
+`divide` and `modulo`; `access`, `bracket_access`, `in`, `contains` and
+`make_list`; and `object_new`, `object_set`, `duration` and
+`relative_date`. It refuses every other opcode as `unknown_instruction` until a
 later version adds it (the retired `and` and `or` as `retired_opcode`). A variable the context does not bind
 reads as undefined, and the evaluation fails with an `UndefinedVariableError`
 when undefined is its answer or an instruction refuses it; with
 `Options::new().on_unbound(OnUnbound::Error)` the load itself fails.
+
+`relative_date` reads the current time from the clock the options name
+(`Options::new().clock(|| ...)`, a callable answering an
+`Option<DateTime>`), or from the system clock when they name none. A run
+reads the clock at most once, the first time the program reads the time, and
+never when it does not; a clock that answers `None` fails the run with an
+`EvaluationError`, reason `clock_unavailable`.
 
 ## Differences from the reference
 
@@ -84,6 +92,23 @@ code says otherwise, or has no counterpart in the reference:
   duration, and `add` and `subtract` move a date by any duration; the
   reference's code reads a unit only from a duration the host supplied, and
   moves a date only by one a literal or an instruction made.
+- **`relative_date` takes a duration and moves by all of it.** It moves the
+  current time by any duration exactly as `add` and `subtract` move an
+  instant, and a value on the stack that is not a duration (a map included)
+  fails with an `EvaluationError`, reason `invalid_stack_value`, as the
+  reference's instruction-set text states it. The reference's code takes any
+  map there, and moves by nothing for a duration the host supplied.
+- **The clock is passed per call and read once per run.** The reference's
+  code reads the system clock at each `relative_date`; here the clock is the
+  one `Options` names (the system clock by default), read the first time a
+  run reads the time, and every later read in that run sees the same
+  instant. A clock with no time to give fails the run with the reason
+  `clock_unavailable`, which the reference has no counterpart for.
+- **`object_set` writes into a map and nothing else.** A date, an instant or
+  a duration beneath the value fails with an `EvaluationError`, reason
+  `invalid_stack_value`, as the reference's instruction-set text states it
+  for any target that is not a map. The reference's code holds those three
+  as maps and writes the key into them.
 - **A duration's text writes a negative unit with its sign** (`-3d`). The
   reference's instruction-set text leaves out only a zero unit; its code
   leaves out a negative one too.
