@@ -7,6 +7,8 @@ use crate::corpus::{Corpus, Expected, root};
 use crate::ratchet;
 use crate::registry::{self, Claim, Entry, Registry};
 use crate::runner::{self, CaseResult, Outcome, Report};
+use predicator_rs::Value;
+use predicator_rs::tagged::{decode, encode};
 use std::path::{Path, PathBuf};
 
 const CORPUS_HASH: &str = "sha256:2eebecf5b5493aaed4ddfd5ac7926ef05211c4d57b6c27eda7724320486b7686";
@@ -253,10 +255,10 @@ fn the_loader_carries_every_field_of_a_case() {
     assert_eq!(case.source.as_deref(), Some("limit > 85"));
     assert_eq!(
         case.instructions,
-        serde_json::json!([["load", "limit"], ["lit", 85], ["compare", "GT"]])
+        decode(r#"[["load","limit"],["lit",85],["compare","GT"]]"#).unwrap()
     );
-    assert_eq!(case.context, serde_json::json!({"limit": 85}));
-    assert_eq!(case.expected, Expected::Result(serde_json::json!(false)));
+    assert_eq!(case.context, decode(r#"{"limit":85}"#).unwrap());
+    assert_eq!(case.expected, Expected::Result(Value::Bool(false)));
     assert_eq!(case.tier, 1);
     assert_eq!(case.features, vec!["comparison".to_owned()]);
     assert_eq!(
@@ -693,4 +695,41 @@ fn the_ratchet_refuses_a_pass_outside_the_surface_set() {
             case.id
         )]
     );
+}
+
+// Sabotage: with the tagged writer's float text writing every float in
+// exponent form, this test fails.
+#[test]
+fn every_case_line_round_trips_through_the_tagged_codec_byte_for_byte() {
+    let dir = root();
+    let mut lines = 0;
+    for tier in
+        crate::corpus::manifest_tiers(&crate::corpus::read_json(&dir, "manifest.json").unwrap())
+            .unwrap()
+    {
+        let text = std::fs::read_to_string(dir.join(&tier.file)).unwrap();
+        for line in text.lines().filter(|line| !line.is_empty()) {
+            let value = decode(line).unwrap_or_else(|error| panic!("{}: {error:?}", tier.file));
+            assert_eq!(encode(&value).unwrap(), line, "{}", tier.file);
+            lines += 1;
+        }
+    }
+    assert_eq!(lines, corpus().cases.len());
+}
+
+// Sabotage: with case_value answering Null without decoding, this test
+// fails.
+#[test]
+fn a_case_value_the_codec_refuses_fails_the_load() {
+    let dir = copy("refused-case-value");
+    let tier_one = dir.join("corpus/tier-1.json");
+    edit(&tier_one, |text| {
+        text.replacen(
+            r#""context":{"limit":85}"#,
+            r#""context":{"limit":{"$type":"nope"}}"#,
+            1,
+        )
+    });
+    let error = Corpus::load(&dir).unwrap_err();
+    assert!(error.contains("context: invalid_tagged_value"), "{error}");
 }
