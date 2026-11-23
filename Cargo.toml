@@ -1,12 +1,12 @@
 [package]
 name = "predicator-rs"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/riddler/predicator-rs"
 readme = "README.md"
-description = "A placeholder until 0.1.0: the Rust port of the predicator condition language, compiled to a small instruction set and evaluated by a stack machine."
+description = "The Rust port of the predicator condition language: compiles a condition to a small instruction set and evaluates it on a stack machine, checked against the reference conformance corpus."
 keywords = ["predicate", "condition", "expression", "rules", "evaluator"]
 categories = ["parser-implementations", "algorithms"]
 include = ["/src/", "/Cargo.toml", "/README.md", "/LICENSE", "/CHANGELOG.md"]
