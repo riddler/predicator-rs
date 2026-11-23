@@ -3,6 +3,7 @@
 #   mise install          provision the toolchain below
 #   mise run gate:loop    inner loop: fmt, clippy, test
 #   mise run gate         full gate, the advancement gate
+#   mise run ratchet      write conformance/registry.json from a run
 #
 # The Rust toolchain is pinned to one stable release; the crate itself
 # declares `rust-version = "1.85"` in Cargo.toml, the oldest Rust it
@@ -21,6 +22,26 @@ run = "cargo fmt --all -- --check"
 [tasks."gate:clippy"]
 description = "Lint every target with every feature, warnings denied"
 run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks."gate:corpus"]
+description = "The vendored corpus and transcripts are the ones their records name"
+# One test of tests/conformance/, run on its own so what it prints is shown:
+# the corpus and transcript hashes, the tier counts, and the count of
+# transcript rows conformance/transcript/SUPERSEDED.json lists.
+run = "cargo test --test conformance -- --exact corpus_check --nocapture"
+
+[tasks."gate:registry"]
+description = "conformance/registry.json passes every check RATCHET.md gives it"
+# Runs both surfaces over every case and prints, per surface, the cases not
+# yet claimed.
+run = "cargo test --test conformance -- --exact registry_check --nocapture"
+
+[tasks.ratchet]
+description = "Verify-then-add: write conformance/registry.json from a run made now"
+# The one writer of the registry, outside the gate. Claims are asserted
+# through PREDICATOR_RATCHET_CLAIMS, e.g.
+#   PREDICATOR_RATCHET_CLAIMS="evaluator:2 compiler:1" mise run ratchet
+run = "cargo test --test conformance -- --ignored --exact ratchet --nocapture"
 
 [tasks."gate:test"]
 description = "Test with every feature, then with no default features"
@@ -60,6 +81,8 @@ description = "Full gate"
 run = [
   { task = "gate:fmt" },
   { task = "gate:clippy" },
+  { task = "gate:corpus" },
+  { task = "gate:registry" },
   { task = "gate:test" },
   { task = "gate:doc" },
   { task = "gate:coverage" },
