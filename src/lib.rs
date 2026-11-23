@@ -2,7 +2,7 @@
 //! condition to a small instruction set and evaluates it on a stack machine.
 //!
 //! The crate holds its value model so far: [`Value`] and the types it is
-//! built from ([`Map`], [`Date`], [`DateTime`], [`Duration`]), the
+//! built from ([`Map`] and its [`Key`], [`Date`], [`DateTime`], [`Duration`]), the
 //! [`Error`] every entry point answers, and the [`tagged`] codec for the
 //! conformance corpus's tagged-value encoding. The compiler and the
 //! evaluator are to come.
@@ -29,7 +29,7 @@ pub use civil::{Date, DateTime, Duration};
 pub use error::{
     Error, EvaluationError, ParseError, Position, TypeMismatchError, UndefinedVariableError,
 };
-pub use map::Map;
+pub use map::{Key, Map};
 pub use value::Value;
 
 #[cfg(test)]

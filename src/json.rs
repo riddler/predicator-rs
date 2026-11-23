@@ -7,7 +7,7 @@
 //! no value can exhaust the stack.
 
 use crate::boundary::DEPTH_LIMIT;
-use crate::{Map, Value};
+use crate::{Key, Map, Value};
 
 /// Why a text could not be read or a value written: a reason token and a
 /// sentence.
@@ -331,6 +331,7 @@ pub(crate) fn read(
                     key,
                     start,
                 }) => {
+                    let key = Key::String(key);
                     if !map.contains_key(&key) {
                         map.insert(key, value);
                     }
@@ -423,11 +424,9 @@ pub(crate) fn float_text(number: f64) -> String {
         return format!("{sign}0.0");
     }
     // Rust's exponent form writes the shortest round-trip digits.
-    let shortest = format!("{:e}", number.abs());
-    let (mantissa, exponent) = shortest.split_once('e').unwrap_or((&shortest, "0"));
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let digits = digits.trim_end_matches('0');
-    let point = exponent.parse::<i64>().unwrap_or(0) + 1;
+    let (digits, point) = scientific(&format!("{:e}", number.abs()));
+    let digits = even_on_tie(number.abs(), digits, point);
+    let digits = digits.as_str();
     let exponent_form = exponent_form(digits, point);
     if number.abs() >= EXPONENT_FROM {
         return format!("{sign}{exponent_form}");
@@ -438,6 +437,46 @@ pub(crate) fn float_text(number: f64) -> String {
     } else {
         format!("{sign}{exponent_form}")
     }
+}
+
+/// The significant digits of a number written in Rust's exponent form, with
+/// no trailing zeros, and where the point falls: the number is `0.DIGITS`
+/// times ten to the power of the second value.
+fn scientific(text: &str) -> (String, i64) {
+    let (mantissa, exponent) = text.split_once('e').unwrap_or((text, "0"));
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let point = exponent.parse::<i64>().unwrap_or(0) + 1;
+    (digits.trim_end_matches('0').to_owned(), point)
+}
+
+/// The shortest digits the reference writes. When the float lies exactly
+/// halfway between two shortest candidates that both read back as it, the
+/// reference takes the one whose last digit is even, where Rust's own
+/// formatting may take the other: `2242476775408840.25` is written
+/// `2242476775408840.2`.
+fn even_on_tie(magnitude: f64, digits: String, point: i64) -> String {
+    let Some((head, last)) = digits
+        .char_indices()
+        .last()
+        .and_then(|(at, last)| Some((digits.get(..at)?, last.to_digit(10)?)))
+    else {
+        return digits;
+    };
+    // The float's exact decimal expansion; 800 digits hold any f64.
+    let (exact, exact_point) = scientific(&format!("{magnitude:.800e}"));
+    if exact_point != point || last % 2 == 0 {
+        return digits;
+    }
+    let other = if exact == format!("{head}{}5", last.saturating_sub(1)) {
+        format!("{head}{}", last.saturating_sub(1))
+    } else if last < 9 && exact == format!("{digits}5") {
+        format!("{head}{}", last + 1)
+    } else {
+        return digits;
+    };
+    let other = other.trim_end_matches('0');
+    let reads_back = format!("0.{other}e{point}").parse::<f64>() == Ok(magnitude);
+    if reads_back { other.to_owned() } else { digits }
 }
 
 /// `0.DIGITS` times ten to the power `point`, written plain.
@@ -463,6 +502,15 @@ fn exponent_form(digits: &str, point: i64) -> String {
     let rest = characters.as_str();
     let rest = if rest.is_empty() { "0" } else { rest };
     format!("{first}.{rest}e{}", point - 1)
+}
+
+/// The refusal of a map key JSON has no form for: an object's keys are
+/// strings.
+pub(crate) fn non_string_key(key: &Key) -> Refusal {
+    Refusal::new(
+        "non_string_map_key",
+        format!("the map key {key:?} is not a string, and a JSON object's keys are"),
+    )
 }
 
 /// One step of an iterative write.
@@ -515,6 +563,10 @@ pub(crate) fn write(value: &Value, extension: &dyn Extension) -> Result<String, 
                     out.push('{');
                     work.push(Task::Text("}"));
                     for (index, (key, item)) in map.entries.iter().enumerate().rev() {
+                        let key = match key {
+                            Key::String(key) => key.as_str(),
+                            _ => return Err(non_string_key(key)),
+                        };
                         work.push(Task::Value(item, depth + 1));
                         work.push(Task::Key(key));
                         if index > 0 {
@@ -556,7 +608,8 @@ mod tests {
         (fault.refusal.reason, fault.offset)
     }
 
-    // Sabotage: with EXPONENT_FROM raised to 1e17, this test fails.
+    // Sabotage: with EXPONENT_FROM raised to 1e17, or with even_on_tie
+    // answering Rust's digits unchanged, this test fails.
     #[test]
     fn floats_are_written_as_the_reference_writes_them() {
         // Each pair was read from the reference's own float text.
@@ -582,6 +635,11 @@ mod tests {
             (1.0e10, "1.0e10"),
             (0.00012, "1.2e-4"),
             (std::f64::consts::SQRT_2, "1.4142135623730951"),
+            // Each exactly halfway between two shortest candidates, the
+            // last digits 2 and 3: the reference takes the even one.
+            (2_242_476_775_408_840.0 + 0.25, "2242476775408840.2"),
+            (2_216_607_000_000_000.0 + 0.25, "2216607000000000.2"),
+            (2_240_000_000_000_000.0 + 0.25, "2240000000000000.2"),
         ];
         for (number, text) in pinned {
             assert_eq!(float_text(number), text, "{number:e}");
@@ -633,8 +691,8 @@ mod tests {
         let Value::Map(map) = &object else {
             panic!("{object:?}")
         };
-        assert_eq!(map.get("a"), Some(&Value::List(vec![])));
-        assert_eq!(map.get("b"), Some(&Value::Map(Map::new())));
+        assert_eq!(map.get(&"a".into()), Some(&Value::List(vec![])));
+        assert_eq!(map.get(&"b".into()), Some(&Value::Map(Map::new())));
         assert_eq!(
             plain("9223372036854775807").unwrap(),
             Value::Integer(i64::MAX)

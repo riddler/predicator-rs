@@ -12,9 +12,9 @@
 //! a float.
 
 use crate::boundary::{self, DEPTH_LIMIT};
-use crate::json::Refusal;
+use crate::json::{self, Refusal};
 use crate::tagged;
-use crate::{Date, DateTime, Duration, Map, Value};
+use crate::{Date, DateTime, Duration, Key, Map, Value};
 use core::fmt;
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::ser::{self, SerializeMap, SerializeSeq};
@@ -70,6 +70,9 @@ impl Serialize for Checked<'_> {
                 tagged::check_map(map).map_err(|refusal| ser::Error::custom(text(refusal)))?;
                 let mut entries = serializer.serialize_map(Some(map.len()))?;
                 for (key, item) in map.iter() {
+                    let Key::String(key) = key else {
+                        return Err(ser::Error::custom(text(json::non_string_key(key))));
+                    };
                     entries.serialize_entry(key, &Checked(item))?;
                 }
                 entries.end()
@@ -193,6 +196,7 @@ impl<'de> Visitor<'de> for ValueSeed {
         let mut map = Map::new();
         while let Some(key) = entries.next_key_seed(KeySeed)? {
             let item = entries.next_value_seed(ValueSeed(self.0 + 1))?;
+            let key = Key::String(key);
             if !map.contains_key(&key) {
                 map.insert(key, item);
             }
@@ -331,6 +335,8 @@ mod tests {
         assert!(failure(Value::from(f64::NAN)).starts_with("non_finite_number"));
         let reserved: Map = [("$type", Value::Null)].into_iter().collect();
         assert!(failure(reserved.into()).starts_with("reserved_map_key"));
+        let integer_key: Map = [(Key::from(1), Value::Null)].into_iter().collect();
+        assert!(failure(integer_key.into()).starts_with("non_string_map_key"));
         assert!(failure(Value::from(date(10_000, 1, 1))).starts_with("invalid_tagged_value"));
         let mut deep = Value::Null;
         for _ in 0..101 {
