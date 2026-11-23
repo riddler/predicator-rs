@@ -2,14 +2,14 @@
 
 A Rust port of the [predicator](https://github.com/riddler/predicator-ex)
 condition language. A condition is a short expression such as
-`score > 10 and status in ["open", "held"]`. The crate will compile it to a
-small instruction set and evaluate it on a stack machine, with the same
+`score > 10 and status in ["open", "held"]`. The crate compiles it to a
+small instruction set and evaluates it on a stack machine, with the same
 answers as the reference implementation on its shared conformance corpus.
 
 The published 0.0.0 is a placeholder that reserves the crate name; the first
 usable version is 0.1.0. What the source holds so far is the value model
 (`Value` and its types), the errors, the codec for the conformance corpus's
-tagged-value encoding (`tagged`), and the evaluator:
+tagged-value encoding (`tagged`), the compiler (below), and the evaluator:
 `evaluate` runs an instruction list (`Instructions`, read from JSON in the
 tagged encoding) over a `Context`, with `Options` passed per call. It runs
 every tier of the instruction set: `lit`, `load`, `compare`, `not`,
@@ -24,6 +24,48 @@ refuses every other opcode as `unknown_instruction` (the retired `and` and
 reads as undefined, and the evaluation fails with an `UndefinedVariableError`
 when undefined is its answer or an instruction refuses it; with
 `Options::new().on_unbound(OnUnbound::Error)` the load itself fails.
+
+## Compiling
+
+`compile` turns an expression's source into the instruction list the
+reference's compiler emits for it, and `compile_program` a statement
+program's: statements separated by `;`, each an assignment
+(`a.b[0] = value`), an `if` with an optional `else` or `else if`, a
+`while`, or an expression. Each answers `Instructions` or a `ParseError`
+carrying the reference's message, the position of the token it names and
+a reason. `Instructions::to_json` writes the list in the tagged encoding,
+which `Instructions::from_json` reads back; neither needs a feature.
+`evaluate` takes a source in place of an instruction list and compiles it
+as an expression, and `execute` and `execute_value` take one and compile
+it as a statement program; a source that does not compile is refused
+before anything runs.
+
+```rust
+use predicator_rs::{Context, Error, Key, Options, Value, compile, evaluate, execute};
+
+fn main() -> Result<(), Error> {
+    let instructions = compile("score > 85 AND x is not blank")?;
+    assert_eq!(
+        instructions.to_json()?,
+        r#"[["load","score"],["lit",85],["compare","GT"],["jump_if_falsy_or_pop",4],["load","x"],["presence","blank"],["not"]]"#
+    );
+
+    let mut context = Context::new();
+    context.insert("score", Value::from(90));
+    context.insert("x", Value::from("a"));
+    assert_eq!(evaluate("score > 85 AND x is not blank", &context, &Options::new())?, Value::from(true));
+
+    let execution = execute("y = score + 1", &context, &Options::new())?;
+    assert_eq!(execution.context().get(&Key::from("y")), Some(&Value::from(91)));
+    Ok(())
+}
+```
+
+Every corpus case with a source compiles to the case's instructions, and
+the rows of the compile transcript the crate vendors compile or are refused
+as the reference's compiler does (`conformance/README.md`). The
+transcript's decompile rows render a tree back to source text; decompiling
+is out of scope until the crate has a function for it.
 
 `relative_date` reads the current time from the clock the options name
 (`Options::new().clock(|| ...)`, a callable answering an
@@ -343,6 +385,13 @@ code says otherwise, or has no counterpart in the reference:
   with the reason `depth_limit_exceeded`; the reference has no bound. A
   deeper value the host builds is still compared, copied and dropped without
   recursion.
+- **An error from running a compiled source carries no position.** The
+  reference's code places a failure while running a source at the token
+  of the instruction that failed, and its compile functions can answer
+  that position, or that span, for each instruction; this crate keeps no
+  such table, so an `EvaluationError`, a `TypeMismatchError` or an
+  `UndefinedVariableError` has no `position()`. A `ParseError` from a
+  source carries its position, as the reference's does.
 - **`execute` answers the roots a run stored into** (`stored_roots`), each
   once in the order of its first store, whether or not a store changed the
   value there. The reference has no such answer; its callers compare the

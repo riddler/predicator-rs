@@ -21,7 +21,15 @@
 //! `cast`; `jump` and `pop_jump_if_falsy`; `jump_backward`, each back edge
 //! spending one of the run's loop budget ([`Options::loop_budget`]); and
 //! `presence` and `intersects`. Every other opcode is refused as `unknown_instruction`, and the retired `and`
-//! and `or` as `retired_opcode`. The compiler is to come.
+//! and `or` as `retired_opcode`.
+//!
+//! The compiler turns a source into the same instructions the reference's
+//! compiler does: [`compile`] reads one expression and [`compile_program`]
+//! a statement program, each answering [`Instructions`] or the
+//! [`Error::Parse`] that refused the source, and [`Instructions::to_json`]
+//! writes the list back in the tagged encoding. [`evaluate`] also takes a
+//! source as its program (a `&str`), compiled as an expression, and
+//! [`execute`] and [`execute_value`] one compiled as a statement program.
 //!
 //! [`execute`] and [`execute_value`] run the same instructions as a
 //! statement program: the answer is an [`Execution`], the context the run
@@ -41,27 +49,16 @@
 mod boundary;
 mod civil;
 mod compare;
+mod compiler;
 mod context;
 mod error;
 mod evaluator;
 mod execution;
 mod instructions;
 mod json;
-// The lexer has no caller in the library until the compiler uses it; the
-// expectation fails the build once one does, so it comes off then.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the compiler uses the lexer")
-)]
 mod lexer;
 mod map;
 mod options;
-// The parser has no caller in the library until the compiler uses it; the
-// expectation fails the build once one does, so it comes off then.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the compiler uses the parser")
-)]
 mod parser;
 #[cfg(feature = "serde")]
 mod serde_impl;
@@ -69,6 +66,7 @@ pub mod tagged;
 mod value;
 
 pub use civil::{Date, DateTime, Duration};
+pub use compiler::{compile, compile_program};
 pub use context::Context;
 pub use error::{
     Error, EvaluationError, ParseError, Position, TypeMismatchError, UndefinedVariableError,

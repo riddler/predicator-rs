@@ -52,17 +52,31 @@ impl Report {
 /// What a case comes to on `surface`. The evaluator surface runs the case's
 /// instruction list over its context with the default options and compares
 /// the answer (by strict equality) or the error's type and reason (never its
-/// message) with what the case expects. The crate has no compiler yet, so
-/// every compiler case is a fail naming the missing surface: the honest
+/// message) with what the case expects. The compiler surface compiles the
+/// case's source as an expression and compares the instruction list it
+/// answers, operand by operand (an integer is not a float), with the case's.
+/// A surface the crate does not have fails every case naming it: the honest
 /// report the never-skip rule asks for.
 fn attempt(surface: &str, case: &Case) -> CaseResult {
     let outcome = match surface {
         "evaluator" => evaluate(case),
+        "compiler" => compile(case),
         _ => Outcome::Fail(format!("{surface} not implemented")),
     };
     CaseResult {
         id: case.id.clone(),
         outcome,
+    }
+}
+
+fn compile(case: &Case) -> Outcome {
+    let Some(source) = &case.source else {
+        return Outcome::Fail("the case has no source".to_owned());
+    };
+    let compiled = predicator_rs::compile(source).and_then(|instructions| instructions.to_json());
+    match compiled.and_then(|text| predicator_rs::tagged::decode(&text)) {
+        Ok(got) if got == case.instructions => Outcome::Pass,
+        got => Outcome::Fail(format!("expected {:?}, got {got:?}", case.instructions)),
     }
 }
 
