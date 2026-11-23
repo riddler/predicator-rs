@@ -1,8 +1,11 @@
 //! The rich-type instructions, `object_new`, `object_set`, `duration` and
 //! `relative_date`, as the reference's instruction-set text states them.
 //!
-//! `object_set` writes into a map and nothing else: a date, an instant and
-//! a duration are not maps to it. `duration` builds the one duration kind
+//! A duration is read as the map of its eight units that the instruction-set
+//! text makes it: `object_set` writes into a map or a duration, which answers
+//! the plain map of its units with the key written, and `relative_date`
+//! takes a duration or a plain map, read as the duration its unit names
+//! spell. A date and an instant are not maps to either. `duration` builds the one duration kind
 //! the crate has, the same kind a context or a date subtraction gives, and
 //! `relative_date` moves the current time by any duration exactly as `add`
 //! and `subtract` move an instant (`arithmetic`), so a month is 30 days and
@@ -12,9 +15,14 @@ use super::Fault;
 use super::arithmetic::shift_instant;
 use crate::{DateTime, Duration, EvaluationError, Key, Value};
 
-/// `object_set`: `target` with `key` set to `value`. A target that is not a
-/// map fails with the reason `invalid_stack_value`.
+/// `object_set`: `target` with `key` set to `value`. A duration target is
+/// the plain map of its eight units, so the answer is that map with the key
+/// written. A target that is neither a map nor a duration fails with the
+/// reason `invalid_stack_value`.
 pub(super) fn object_set(mut target: Value, key: &str, value: Value) -> Result<Value, Fault> {
+    if let Value::Duration(duration) = &target {
+        target = Value::Map(duration.unit_map());
+    }
     if let Value::Map(map) = &mut target {
         map.insert(Key::from(key), value);
         return Ok(target);
@@ -85,13 +93,20 @@ fn invalid_format() -> Fault {
 
 /// `relative_date`'s operands checked before the clock is read: the
 /// duration on top of the stack and the sign `direction` gives it, `-1` for
-/// `ago` and `last` and `1` for `future` and `next`. A top that is not a
-/// duration fails with the reason `invalid_stack_value`, and any other
-/// direction with `invalid_direction`.
+/// `ago` and `last` and `1` for `future` and `next`. A plain map on top is
+/// read as the duration its unit names spell, a unit it leaves out as 0 and
+/// any other key passed over. A top that is neither, or a map holding a
+/// unit that is not an integer, fails with the reason
+/// `invalid_stack_value`, and any other direction with `invalid_direction`.
 pub(super) fn relative(top: &Value, direction: &str) -> Result<(Duration, i128), Fault> {
-    let Value::Duration(duration) = top else {
+    let duration = match top {
+        Value::Duration(duration) => Some(*duration),
+        Value::Map(map) => Duration::from_unit_map(map, &[]),
+        _ => None,
+    };
+    let Some(duration) = duration else {
         return Err(invalid_stack_value(&format!(
-            "relative_date takes a duration, not a {}",
+            "relative_date takes a duration or a map of its units, not a {}",
             super::type_name(top)
         )));
     };
@@ -106,7 +121,7 @@ pub(super) fn relative(top: &Value, direction: &str) -> Result<(Duration, i128),
             .into());
         }
     };
-    Ok((*duration, sign))
+    Ok((duration, sign))
 }
 
 /// `now` moved by `duration`, forward when `sign` is 1 and back when it is
@@ -169,7 +184,7 @@ mod tests {
         );
     }
 
-    // Sabotage: with object_set answering a duration target unchanged, this
+    // Sabotage: with object_set accepting a date target as an empty map, this
     // test fails.
     #[test]
     fn object_set_refuses_a_target_that_is_not_a_map() {
@@ -189,10 +204,6 @@ mod tests {
             );
         }
         assert_eq!(
-            reason(r#"[["duration",[[3,"d"]]],["lit",1],["object_set","days"]]"#),
-            "EvaluationError invalid_stack_value"
-        );
-        assert_eq!(
             reason(r#"[["lit",1],["object_set","a"]]"#),
             "EvaluationError insufficient_operands"
         );
@@ -205,6 +216,68 @@ mod tests {
             assert_eq!(
                 reason(text),
                 "EvaluationError unknown_instruction",
+                "{text}"
+            );
+        }
+    }
+
+    // Sabotage: with object_set leaving a duration target refused as
+    // invalid_stack_value, this test fails.
+    #[test]
+    fn object_set_on_a_duration_answers_the_plain_map_of_its_units() {
+        let units = |days: i64, extra: Option<(&str, Value)>| {
+            let mut map: crate::Map = Duration {
+                days,
+                ..Duration::default()
+            }
+            .units()
+            .into_iter()
+            .map(|(name, _, amount)| (name, Value::Integer(amount)))
+            .collect();
+            if let Some((key, value)) = extra {
+                map.insert(key, value);
+            }
+            Value::Map(map)
+        };
+        assert_eq!(
+            run(r#"[["duration",[[3,"d"]]],["lit",1],["object_set","a"]]"#).unwrap(),
+            units(3, Some(("a", Value::from(1))))
+        );
+        // A unit name is a key like any other: the written value replaces
+        // the unit's, and the answer is still a plain map.
+        assert_eq!(
+            run(r#"[["duration",[[3,"d"]]],["lit",5],["object_set","days"]]"#).unwrap(),
+            units(5, None)
+        );
+    }
+
+    // Sabotage: with relative refusing every map as invalid_stack_value,
+    // this test fails.
+    #[test]
+    fn relative_date_reads_a_plain_map_as_the_duration_its_unit_names_spell() {
+        let options = Options::new().clock(|| Some(noon()));
+        let at = |text: &str| run_with(text, &options);
+        let instant = |text: &str| Value::DateTime(DateTime::parse(text).unwrap());
+        // An absent unit is 0 and a key naming no unit is passed over.
+        assert_eq!(
+            at(r#"[["lit",{"days":3,"hours":1,"other":"x"}],["relative_date","ago"]]"#).unwrap(),
+            instant("2030-01-12T11:00:00Z")
+        );
+        assert_eq!(
+            at(r#"[["object_new"],["relative_date","next"]]"#).unwrap(),
+            instant("2030-01-15T12:00:00Z")
+        );
+        // A unit that is not an integer is refused, as is any other value.
+        for text in [
+            r#"[["lit",{"days":"3"}],["relative_date","ago"]]"#,
+            r#"[["lit",{"days":1.5}],["relative_date","ago"]]"#,
+            r#"[["lit",{"$type":"date","value":"2030-01-15"}],["relative_date","ago"]]"#,
+            r#"[["lit",3],["relative_date","ago"]]"#,
+        ] {
+            let error = at(text).unwrap_err();
+            assert_eq!(
+                (error.type_name(), error.reason()),
+                ("EvaluationError", "invalid_stack_value"),
                 "{text}"
             );
         }
@@ -346,7 +419,7 @@ mod tests {
             "EvaluationError insufficient_operands"
         );
         assert_eq!(
-            refused(r#"[["object_new"],["relative_date","ago"]]"#),
+            refused(r#"[["lit",{"days":"1"}],["relative_date","ago"]]"#),
             "EvaluationError invalid_stack_value"
         );
         assert_eq!(
@@ -411,7 +484,7 @@ mod tests {
             let error = run_with(&text, &options).unwrap_err();
             assert_eq!(
                 (error.type_name(), error.reason()),
-                ("EvaluationError", "clock_unavailable")
+                ("EvaluationError", "clock_failed")
             );
         }
         // Without a clock the run reads the system clock.

@@ -180,11 +180,7 @@ pub(super) fn check(bindings: &Map, path: &[Segment<'_>]) -> Result<(), Evaluati
 
 /// The map of `duration`'s eight units.
 fn units(duration: &Duration) -> Map {
-    duration
-        .units()
-        .into_iter()
-        .map(|(name, _, amount)| (name, Value::Integer(amount)))
-        .collect()
+    duration.unit_map()
 }
 
 /// `slot` made the container the segment `next` writes into, where the

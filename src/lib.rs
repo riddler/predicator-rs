@@ -1,7 +1,7 @@
 //! A Rust port of the predicator condition language, which compiles a
 //! condition to a small instruction set and evaluates it on a stack machine.
 //!
-//! The crate holds its value model so far: [`Value`] and the types it is
+//! The crate holds its value model: [`Value`] and the types it is
 //! built from ([`Map`] and its [`Key`], [`Date`], [`DateTime`], [`Duration`]), the
 //! [`Error`] every entry point answers, and the [`tagged`] codec for the
 //! conformance corpus's tagged-value encoding.
@@ -38,6 +38,29 @@
 //! context as of its last completed statement. A store into a root the
 //! [`Options`] protect ([`Options::protected_roots`]) is refused.
 //!
+//! [`parse_duration`] reads a duration from its literal spelling (`"1h30m"`),
+//! and [`ISA_VERSION`] is the version of the instruction set the crate runs.
+//!
+//! # The public surface
+//!
+//! The crate root holds the functions [`compile`], [`compile_program`],
+//! [`evaluate`], [`execute`], [`execute_value`] and [`parse_duration`]; the
+//! constant [`ISA_VERSION`]; the module [`tagged`]; and the types [`Value`]
+//! (with its parts [`Map`] and [`Key`]), [`Context`], [`Instructions`],
+//! [`Duration`], [`Date`], [`DateTime`], [`Options`] (with its part
+//! [`OnUnbound`]), [`Execution`], [`Stopped`], [`Position`], and [`Error`]
+//! with the four error types it holds. Every other module is private.
+//! Every entry point answers a `Result`, and nothing is configured
+//! globally: host functions, the clock and the random source are passed per
+//! call in an [`Options`], and may borrow from the caller for the length of
+//! the call.
+//!
+//! No source, instruction list or context makes the crate panic or
+//! overflow its stack. A panic inside a function the caller passes in (a
+//! host function, a clock or a random source) is not caught: it unwinds
+//! through the run to the caller, as any panic in the caller's own code
+//! does.
+//!
 //! With the `serde` feature (off by default), [`Value`] implements
 //! `Serialize` and `Deserialize` in the tagged encoding, and [`Date`],
 //! [`DateTime`] and [`Duration`] in the text and the unit map that encoding
@@ -65,7 +88,7 @@ mod serde_impl;
 pub mod tagged;
 mod value;
 
-pub use civil::{Date, DateTime, Duration};
+pub use civil::{Date, DateTime, Duration, parse_duration};
 pub use compiler::{compile, compile_program};
 pub use context::Context;
 pub use error::{
@@ -77,6 +100,15 @@ pub use instructions::Instructions;
 pub use map::{Key, Map};
 pub use options::{OnUnbound, Options};
 pub use value::Value;
+
+/// The version of the reference's instruction set this crate runs: every
+/// opcode of every tier up to it, the version the vendored conformance
+/// corpus names.
+///
+/// ```
+/// assert_eq!(predicator_rs::ISA_VERSION, 7);
+/// ```
+pub const ISA_VERSION: u32 = 7;
 
 #[cfg(test)]
 mod tests {

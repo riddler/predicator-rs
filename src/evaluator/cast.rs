@@ -18,7 +18,12 @@
 //! | duration | - | - | text | - | - | - | = |
 //!
 //! `=` passes the value through and `-` is undefined; a list, a map, null
-//! and undefined are `-` for every target. A string is read whole or not at
+//! and undefined are `-` for every target, with one exception: a units map
+//! (a map carrying `years`, `months`, `weeks`, `days`, `hours`, `minutes`
+//! and `seconds` under their string names, every unit it holds an
+//! integer, `milliseconds` included when it holds one) is a duration to a
+//! cast. It passes through `duration` unchanged, still a map, and
+//! `string` writes it in the duration-literal grammar. A string is read whole or not at
 //! all, with no trimming: an integer as `-?[0-9]+`, a float as
 //! `-?[0-9]+(\.[0-9]+)?`, a boolean as exactly `true` or `false`, a date as
 //! `YYYY-MM-DD`, an instant as the text the tagged codec reads (a date, a
@@ -133,8 +138,28 @@ fn convert(value: Value, target: Target) -> Result<Value, Refused> {
         (Value::Date(date), Target::DateTime) => midnight(date),
         (Value::DateTime(instant), Target::Date) => Value::Date(instant.date()),
         (Value::String(ref text), target) => read(text, target)?,
+        (value @ Value::Map(_), Target::Duration) if matches!(&value, Value::Map(map) if units_map(map).is_some()) => {
+            value
+        }
+        (Value::Map(ref map), Target::String) => match units_map(map) {
+            Some(duration) => Value::String(duration.to_string()),
+            None => Value::Undefined,
+        },
         _ => Value::Undefined,
     })
+}
+
+/// The units a map carries to be read by a cast as a duration: the seven
+/// the reference's duration always holds.
+const DURATION_KEYS: [&str; 7] = [
+    "years", "months", "weeks", "days", "hours", "minutes", "seconds",
+];
+
+/// The duration a units map names: a map carrying each of
+/// [`DURATION_KEYS`] under its string name, every unit it holds
+/// (`milliseconds` included, which may be left out) an integer.
+fn units_map(map: &crate::Map) -> Option<Duration> {
+    Duration::from_unit_map(map, &DURATION_KEYS)
 }
 
 /// A string read as `target`, whole or not at all.
@@ -442,6 +467,54 @@ mod tests {
             ),
             text("3d")
         );
+    }
+
+    // Sabotage: with units_map requiring no key (any map read as a
+    // duration), this test fails.
+    #[test]
+    fn a_units_map_casts_as_a_duration() {
+        let units = |extra: &[(&str, Value)]| {
+            let mut map: crate::Map = [
+                "years", "months", "weeks", "days", "hours", "minutes", "seconds",
+            ]
+            .into_iter()
+            .map(|name| (name, Value::from(0)))
+            .collect();
+            map.insert("days", Value::from(3));
+            for (key, value) in extra {
+                map.insert(*key, value.clone());
+            }
+            Value::Map(map)
+        };
+        // It passes through ::duration unchanged, still a map.
+        assert_eq!(answer(units(&[]), "duration"), units(&[]));
+        assert_eq!(answer(units(&[]), "string"), text("3d"));
+        assert_eq!(
+            answer(
+                units(&[("milliseconds", Value::from(500)), ("other", text("x"))]),
+                "string"
+            ),
+            text("3d500ms")
+        );
+        // A unit left out, or one that is not an integer, is not a units map.
+        let mut short = crate::Map::new();
+        short.insert("days", Value::from(3));
+        for value in [
+            Value::Map(short),
+            units(&[("days", Value::from(1.5))]),
+            units(&[("milliseconds", text("5"))]),
+        ] {
+            assert_eq!(
+                answer(value.clone(), "duration"),
+                Value::Undefined,
+                "{value:?}"
+            );
+            assert_eq!(
+                answer(value.clone(), "string"),
+                Value::Undefined,
+                "{value:?}"
+            );
+        }
     }
 
     // Sabotage: with an unknown type name read as a cast to integer, this

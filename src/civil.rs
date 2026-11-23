@@ -1,6 +1,7 @@
 //! Civil dates, instants in UTC and durations: small value types with
 //! hand-written arithmetic on the proleptic Gregorian calendar.
 
+use crate::{Error, EvaluationError, Map, Value};
 use core::fmt;
 
 /// Seconds in a civil day; an instant here has no leap seconds.
@@ -373,6 +374,33 @@ impl Duration {
         }
     }
 
+    /// The plain map of the eight units, each under its name.
+    pub(crate) fn unit_map(&self) -> Map {
+        self.units()
+            .into_iter()
+            .map(|(name, _, amount)| (name, Value::Integer(amount)))
+            .collect()
+    }
+
+    /// The duration a plain map's unit names spell, read by their string
+    /// names: a unit the map leaves out is 0 and a key that names no unit
+    /// is passed over. `None` when a unit the map holds is not an integer,
+    /// or when one of `required` is left out.
+    pub(crate) fn from_unit_map(map: &Map, required: &[&str]) -> Option<Duration> {
+        if required.iter().any(|name| map.get_str(name).is_none()) {
+            return None;
+        }
+        let mut duration = Duration::default();
+        for (name, _, _) in Duration::default().units() {
+            match map.get_str(name) {
+                None => {}
+                Some(Value::Integer(amount)) => *duration.unit_mut(name)? = *amount,
+                Some(_) => return None,
+            }
+        }
+        Some(duration)
+    }
+
     /// Reads the duration-literal grammar as the reference's duration
     /// parser reads it: the whole text is one or more pairs of an amount
     /// and a unit, the amount `[0-9]+` with an optional fraction
@@ -475,6 +503,46 @@ impl Duration {
         *slot = slot.checked_add(amount).ok_or(DurationText::Overflow)?;
         Ok(())
     }
+}
+
+/// Reads a duration from its literal spelling, such as `"3d8h30m"` or
+/// `"1.5s"`: the spelling a `::duration` cast reads and a `::string` cast
+/// writes.
+///
+/// The text is one or more components, each a whole number with an
+/// optional decimal fraction followed by one of the units `y`, `mo`, `w`,
+/// `d`, `h`, `m`, `s` and `ms`, with no whitespace, no sign and no empty
+/// text. A repeated unit adds to the amount before it. A fraction is spread
+/// over whole smaller units (a month 30 days, a year 365), and one that does
+/// not come to a whole number of milliseconds is refused.
+///
+/// A text that does not spell a duration answers an
+/// [`EvaluationError`](crate::EvaluationError) with the reason
+/// `invalid_duration_format`, and one whose unit is outside `i64` the reason
+/// `integer_overflow`.
+///
+/// ```
+/// use predicator_rs::{Duration, parse_duration};
+///
+/// assert_eq!(parse_duration("1h30m")?, Duration { hours: 1, minutes: 30, ..Duration::default() });
+/// assert_eq!(parse_duration("0.5mo")?, Duration { days: 15, ..Duration::default() });
+/// assert_eq!(parse_duration("1d ").unwrap_err().reason(), "invalid_duration_format");
+/// # Ok::<(), predicator_rs::Error>(())
+/// ```
+pub fn parse_duration(text: &str) -> Result<Duration, Error> {
+    Duration::parse(text).map_err(|refused| {
+        match refused {
+            DurationText::Malformed => EvaluationError::new(
+                "invalid_duration_format",
+                format!("Invalid duration format: {text}"),
+            ),
+            DurationText::Overflow => EvaluationError::new(
+                "integer_overflow",
+                format!("the duration {text:?} has a unit outside the 64-bit range"),
+            ),
+        }
+        .into()
+    })
 }
 
 /// Why a text is not a duration.
@@ -920,6 +988,36 @@ mod tests {
                 milliseconds: i64::MAX,
                 ..Duration::default()
             })
+        );
+    }
+
+    // Sabotage: with parse_duration answering integer_overflow for a
+    // malformed text, this test fails.
+    #[test]
+    fn parse_duration_answers_the_duration_or_names_its_refusal() {
+        assert_eq!(
+            parse_duration("3d8h30m"),
+            Ok(Duration {
+                days: 3,
+                hours: 8,
+                minutes: 30,
+                ..Duration::default()
+            })
+        );
+        let reason = |text: &str| {
+            parse_duration(text).map_err(|error| (error.type_name(), error.reason().to_owned()))
+        };
+        assert_eq!(
+            reason(""),
+            Err(("EvaluationError", "invalid_duration_format".to_owned()))
+        );
+        assert_eq!(
+            reason("0.5ms"),
+            Err(("EvaluationError", "invalid_duration_format".to_owned()))
+        );
+        assert_eq!(
+            reason("9223372036854775808s"),
+            Err(("EvaluationError", "integer_overflow".to_owned()))
         );
     }
 }

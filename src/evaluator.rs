@@ -712,14 +712,14 @@ impl<'a> Machine<'a> {
 
     /// The current time: the clock read the first time a run asks, and the
     /// same instant every later time. A clock with no time to give fails
-    /// the run with the reason `clock_unavailable`, the one refusal every
+    /// the run with the reason `clock_failed`, the one refusal every
     /// instruction that reads the time answers.
     fn now(&mut self) -> Result<crate::DateTime, EvaluationError> {
         if let Some(now) = self.now {
             return Ok(now);
         }
         let now = self.options.now().ok_or_else(|| {
-            EvaluationError::new("clock_unavailable", "the clock gave no current time")
+            EvaluationError::new("clock_failed", "the clock gave no current time")
         })?;
         self.now = Some(now);
         Ok(now)
@@ -1542,7 +1542,7 @@ mod tests {
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(
             failure(r#"[["call","Date.now",0]]"#, &Options::new().clock(|| None)).1,
-            "clock_unavailable"
+            "clock_failed"
         );
     }
 

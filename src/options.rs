@@ -11,6 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 ///
 /// assert_eq!(OnUnbound::default(), OnUnbound::Undefined);
 /// ```
+///
+/// The enum is `non_exhaustive`: a later version may add a policy.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum OnUnbound {
     /// The load pushes undefined, and the evaluation fails with an
@@ -45,7 +48,7 @@ type Random<'a> = Box<dyn Fn() -> u64 + Send + Sync + 'a>;
 /// most once, the first time the program reads the time, and never when the
 /// program does not; every later read in the same run answers the same
 /// instant. A clock that answers `None` fails the run with an
-/// [`EvaluationError`](crate::EvaluationError), reason `clock_unavailable`.
+/// [`EvaluationError`](crate::EvaluationError), reason `clock_failed`.
 /// Without one, the run reads the system clock, to the microsecond. A clock
 /// is `Send` and `Sync` and may borrow from its caller, so `Options` is
 /// `Send` and `Sync` whether or not it names one.
@@ -57,6 +60,12 @@ type Random<'a> = Box<dyn Fn() -> u64 + Send + Sync + 'a>;
 /// [`EvaluationError`](crate::EvaluationError) whose reason is that
 /// message. A name passed this way shadows the library function of that
 /// name for the runs these options are given to, and no other.
+///
+/// A function passed in (a host function, the clock, the random source) is
+/// called by the run, on the caller's thread, and may borrow from the caller
+/// for the length of the call. A panic inside one is not caught: it unwinds
+/// out of the entry point to the caller, as a panic in the caller's own
+/// code would.
 ///
 /// The random source is the one `Math.random` draws from
 /// ([`Options::random`]). Without one, a run draws from a source seeded
@@ -128,7 +137,9 @@ impl<'a> Options<'a> {
     }
 
     /// The same options with `clock` as the clock a run reads the current
-    /// time from, in place of the system clock.
+    /// time from, in place of the system clock. A clock that answers `None`
+    /// fails the run with the reason `clock_failed`; a panic inside it is
+    /// not caught.
     #[must_use]
     pub fn clock(mut self, clock: impl Fn() -> Option<DateTime> + Send + Sync + 'a) -> Options<'a> {
         self.clock = Some(Box::new(clock));
@@ -144,7 +155,8 @@ impl<'a> Options<'a> {
     /// are that message, and an answer outside the value domain (a float
     /// that is not finite, lists and maps nested past 100 levels) fails it
     /// with the reason the domain check gives. No arity is checked: the
-    /// function sees however many arguments the call passes.
+    /// function sees however many arguments the call passes. A panic inside
+    /// the function is not caught; it unwinds out of the entry point.
     ///
     /// ```
     /// use predicator_rs::{Context, Instructions, Options, Value, evaluate};
@@ -168,7 +180,8 @@ impl<'a> Options<'a> {
     /// from, in place of the default. Each draw calls it once and turns the
     /// 64 bits it answers into a float in `[0, 1)`: the top 53 bits, over
     /// 2^53. A source that must change state between draws keeps that state
-    /// behind a shared reference (an atomic, a mutex).
+    /// behind a shared reference (an atomic, a mutex). A panic inside it is
+    /// not caught.
     ///
     /// ```
     /// use predicator_rs::{Context, Instructions, Options, Value, evaluate};
@@ -309,7 +322,8 @@ mod tests {
 
     // Sabotage: with the Send + Sync bound removed from Clock and from
     // Options::clock (or from HostFunction and Options::function, or from
-    // Random and Options::random), this test fails to compile.
+    // Random and Options::random), or with an Rc field added to Execution
+    // or Stopped, this test fails to compile.
     #[test]
     fn options_and_a_context_may_be_shared_between_threads() {
         let reads = std::sync::atomic::AtomicU32::new(0);
@@ -330,6 +344,9 @@ mod tests {
                 .protected_roots(["p"]),
         );
         thread_safe(&crate::Context::new());
+        let program = crate::Instructions::from_json("[[\"lit\",1],[\"pop\"]]").unwrap();
+        thread_safe(&crate::execute(&program, &crate::Context::new(), &Options::new()).unwrap());
+        thread_safe(&crate::execute("(", &crate::Context::new(), &Options::new()).unwrap_err());
     }
 
     // Sabotage: with now always reading the system clock, this test fails.

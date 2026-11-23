@@ -14,9 +14,10 @@
 //! term order: members of different kinds are ordered by kind (a number,
 //! then `false`, null, `true` and undefined, then the map-like values, then a
 //! list, then a string), two dates or two instants order by instant, and a
-//! date orders before an instant. Two maps, two durations, or two map-like
-//! values of different kinds have no order, at the top level or as members,
-//! because the reference's text leaves the order of maps unspecified: an
+//! date orders before an instant. Two maps or two durations have no order at
+//! the top level, and as members two unequal maps, two unequal durations or
+//! two map-like values of different kinds have none (two equal members are
+//! level), because the reference's text leaves the order of maps unspecified: an
 //! ordering operator on them answers undefined.
 //!
 //! Every walk over nested lists and maps is iterative, so a pair nested
