@@ -91,56 +91,144 @@ pub struct Map {
 
 impl Map {
     /// An empty map.
+    ///
+    /// ```
+    /// use predicator_rs::Map;
+    ///
+    /// assert!(Map::new().is_empty());
+    /// ```
     pub fn new() -> Map {
         Map::default()
     }
 
     /// How many keys the map holds.
+    ///
+    /// ```
+    /// use predicator_rs::{Map, Value};
+    ///
+    /// let map: Map = [("a", Value::Null), ("b", Value::Null)].into_iter().collect();
+    /// assert_eq!(map.len(), 2);
+    /// ```
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Whether the map holds no keys.
+    ///
+    /// ```
+    /// use predicator_rs::{Map, Value};
+    ///
+    /// let mut map = Map::new();
+    /// assert!(map.is_empty());
+    /// map.insert("a", Value::Null);
+    /// assert!(!map.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// The value at `key`, if the map holds it.
+    ///
+    /// ```
+    /// use predicator_rs::{Key, Map, Value};
+    ///
+    /// let map: Map = [(1, Value::from("x"))].into_iter().collect();
+    /// assert_eq!(map.get(&Key::from(1)), Some(&Value::from("x")));
+    /// assert_eq!(map.get(&Key::from("1")), None);
+    /// ```
     pub fn get(&self, key: &Key) -> Option<&Value> {
         self.entries.get(key)
     }
 
     /// The value at `key`, mutably, if the map holds it.
+    ///
+    /// ```
+    /// use predicator_rs::{Key, Map, Value};
+    ///
+    /// let mut map: Map = [("a", Value::from(1))].into_iter().collect();
+    /// if let Some(value) = map.get_mut(&Key::from("a")) {
+    ///     *value = Value::from(2);
+    /// }
+    /// assert_eq!(map.get(&Key::from("a")), Some(&Value::from(2)));
+    /// ```
     pub fn get_mut(&mut self, key: &Key) -> Option<&mut Value> {
         self.entries.get_mut(key)
     }
 
     /// Whether the map holds `key`.
+    ///
+    /// ```
+    /// use predicator_rs::{Key, Map, Value};
+    ///
+    /// let map: Map = [(true, Value::Null)].into_iter().collect();
+    /// assert!(map.contains_key(&Key::from(true)));
+    /// assert!(!map.contains_key(&Key::from(false)));
+    /// ```
     pub fn contains_key(&self, key: &Key) -> bool {
         self.entries.contains_key(key)
     }
 
     /// Puts `value` at `key`, answering the value it replaces.
+    ///
+    /// ```
+    /// use predicator_rs::{Map, Value};
+    ///
+    /// let mut map = Map::new();
+    /// assert_eq!(map.insert("a", Value::from(1)), None);
+    /// assert_eq!(map.insert("a", Value::from(2)), Some(Value::from(1)));
+    /// ```
     pub fn insert(&mut self, key: impl Into<Key>, value: Value) -> Option<Value> {
         self.entries.insert(key.into(), value)
     }
 
     /// Takes the value at `key` out of the map.
+    ///
+    /// ```
+    /// use predicator_rs::{Key, Map, Value};
+    ///
+    /// let mut map: Map = [("a", Value::from(1))].into_iter().collect();
+    /// assert_eq!(map.remove(&Key::from("a")), Some(Value::from(1)));
+    /// assert_eq!(map.remove(&Key::from("a")), None);
+    /// ```
     pub fn remove(&mut self, key: &Key) -> Option<Value> {
         self.entries.remove(key)
     }
 
     /// The keys and values, in key order.
+    ///
+    /// ```
+    /// use predicator_rs::{Key, Map, Value};
+    ///
+    /// let map: Map = [("b", Value::from(2)), ("a", Value::from(1))].into_iter().collect();
+    /// let pairs: Vec<_> = map.iter().collect();
+    /// assert_eq!(pairs[0], (&Key::from("a"), &Value::from(1)));
+    /// ```
     pub fn iter(&self) -> impl Iterator<Item = (&Key, &Value)> {
         self.entries.iter()
     }
 
     /// The keys, in order.
+    ///
+    /// ```
+    /// use predicator_rs::{Key, Map, Value};
+    ///
+    /// let map: Map = [(Key::from("a"), Value::Null), (Key::from(2), Value::Null)]
+    ///     .into_iter()
+    ///     .collect();
+    /// assert_eq!(map.keys().collect::<Vec<_>>(), [&Key::from(2), &Key::from("a")]);
+    /// ```
     pub fn keys(&self) -> impl Iterator<Item = &Key> {
         self.entries.keys()
     }
 
     /// The values, in key order.
+    ///
+    /// ```
+    /// use predicator_rs::{Map, Value};
+    ///
+    /// let map: Map = [("b", Value::from(2)), ("a", Value::from(1))].into_iter().collect();
+    /// assert_eq!(map.values().collect::<Vec<_>>(), [&Value::from(1), &Value::from(2)]);
+    /// ```
     pub fn values(&self) -> impl Iterator<Item = &Value> {
         self.entries.values()
     }

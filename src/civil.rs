@@ -83,6 +83,14 @@ pub struct Date {
 impl Date {
     /// The date with these parts, or `None` when they name no calendar
     /// date (a month outside 1 to 12, a day past the month's end).
+    ///
+    /// ```
+    /// use predicator_rs::Date;
+    ///
+    /// assert!(Date::new(2024, 2, 29).is_some());
+    /// assert!(Date::new(2023, 2, 29).is_none());
+    /// assert!(Date::new(2024, 13, 1).is_none());
+    /// ```
     pub fn new(year: i32, month: u32, day: u32) -> Option<Date> {
         if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
             return None;
@@ -95,16 +103,34 @@ impl Date {
     }
 
     /// The year; negative before year 0 (1 BC).
+    ///
+    /// ```
+    /// use predicator_rs::Date;
+    ///
+    /// assert_eq!(Date::new(-5, 1, 1).map(|date| date.year()), Some(-5));
+    /// ```
     pub fn year(&self) -> i32 {
         self.year
     }
 
     /// The month, 1 to 12.
+    ///
+    /// ```
+    /// use predicator_rs::Date;
+    ///
+    /// assert_eq!(Date::new(2030, 12, 1).map(|date| date.month()), Some(12));
+    /// ```
     pub fn month(&self) -> u32 {
         u32::from(self.month)
     }
 
     /// The day of the month, from 1.
+    ///
+    /// ```
+    /// use predicator_rs::Date;
+    ///
+    /// assert_eq!(Date::new(2030, 1, 31).map(|date| date.day()), Some(31));
+    /// ```
     pub fn day(&self) -> u32 {
         u32::from(self.day)
     }
@@ -184,6 +210,15 @@ impl DateTime {
     /// The instant at a time of day on `date`, or `None` when the hour is
     /// past 23, the minute or second past 59 or the microsecond past
     /// 999999.
+    ///
+    /// ```
+    /// use predicator_rs::{Date, DateTime};
+    ///
+    /// let date = Date::new(2030, 1, 15).unwrap();
+    /// let instant = DateTime::new(date, 23, 59, 59, 999_999).unwrap();
+    /// assert_eq!(instant.to_string(), "2030-01-15T23:59:59.999999Z");
+    /// assert!(DateTime::new(date, 24, 0, 0, 0).is_none());
+    /// ```
     pub fn new(
         date: Date,
         hour: u32,
@@ -204,6 +239,14 @@ impl DateTime {
     /// The instant `seconds` after 1970-01-01T00:00:00Z (before it when
     /// negative) and `microsecond` into that second, or `None` when the
     /// microsecond is past 999999 or the year is outside `i32`.
+    ///
+    /// ```
+    /// use predicator_rs::DateTime;
+    ///
+    /// let instant = DateTime::from_unix(-1, 0).unwrap();
+    /// assert_eq!(instant.to_string(), "1969-12-31T23:59:59Z");
+    /// assert!(DateTime::from_unix(0, 1_000_000).is_none());
+    /// ```
     pub fn from_unix(seconds: i64, microsecond: u32) -> Option<DateTime> {
         if microsecond >= MICROS_PER_SECOND {
             return None;
@@ -216,31 +259,71 @@ impl DateTime {
     }
 
     /// The whole seconds since 1970-01-01T00:00:00Z, negative before it.
+    ///
+    /// ```
+    /// use predicator_rs::{Date, DateTime};
+    ///
+    /// let date = Date::new(1970, 1, 2).unwrap();
+    /// let instant = DateTime::new(date, 0, 0, 1, 0).unwrap();
+    /// assert_eq!(instant.unix_seconds(), 86_401);
+    /// ```
     pub fn unix_seconds(&self) -> i64 {
         self.date.days() * SECONDS_PER_DAY + i64::from(self.second_of_day)
     }
 
     /// The microsecond within the second, 0 to 999999.
+    ///
+    /// ```
+    /// use predicator_rs::DateTime;
+    ///
+    /// let instant = DateTime::from_unix(0, 250_000).unwrap();
+    /// assert_eq!(instant.microsecond(), 250_000);
+    /// ```
     pub fn microsecond(&self) -> u32 {
         self.microsecond
     }
 
     /// The instant's calendar date in UTC.
+    ///
+    /// ```
+    /// use predicator_rs::{Date, DateTime};
+    ///
+    /// let instant = DateTime::from_unix(86_399, 0).unwrap();
+    /// assert_eq!(instant.date(), Date::new(1970, 1, 1).unwrap());
+    /// ```
     pub fn date(&self) -> Date {
         self.date
     }
 
     /// The hour, 0 to 23.
+    ///
+    /// ```
+    /// use predicator_rs::DateTime;
+    ///
+    /// assert_eq!(DateTime::from_unix(7_200, 0).map(|at| at.hour()), Some(2));
+    /// ```
     pub fn hour(&self) -> u32 {
         self.second_of_day / 3600
     }
 
     /// The minute, 0 to 59.
+    ///
+    /// ```
+    /// use predicator_rs::DateTime;
+    ///
+    /// assert_eq!(DateTime::from_unix(180, 0).map(|at| at.minute()), Some(3));
+    /// ```
     pub fn minute(&self) -> u32 {
         self.second_of_day % 3600 / 60
     }
 
     /// The second, 0 to 59.
+    ///
+    /// ```
+    /// use predicator_rs::DateTime;
+    ///
+    /// assert_eq!(DateTime::from_unix(65, 0).map(|at| at.second()), Some(5));
+    /// ```
     pub fn second(&self) -> u32 {
         self.second_of_day % 60
     }

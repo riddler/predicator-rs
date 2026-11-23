@@ -110,6 +110,12 @@ pub use value::Value;
 /// ```
 pub const ISA_VERSION: u32 = 7;
 
+/// The README's Rust examples, collected only by `cargo test --doc` so that
+/// they compile and run as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 #[cfg(test)]
 mod tests {
     use unicode_segmentation::UnicodeSegmentation;

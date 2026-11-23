@@ -48,6 +48,16 @@ use std::hash::BuildHasher;
 /// an expression ([`compile`](crate::compile)) and [`execute`] and
 /// [`execute_value`] as a statement program
 /// ([`compile_program`](crate::compile_program)) before it runs.
+///
+/// ```
+/// use predicator_rs::{Context, Options, Value, compile, evaluate};
+///
+/// let options = Options::new();
+/// let from_source = evaluate("2 * 3", &Context::new(), &options)?;
+/// let from_list = evaluate(&compile("2 * 3")?, &Context::new(), &options)?;
+/// assert_eq!((from_source, from_list), (Value::from(6), Value::from(6)));
+/// # Ok::<(), predicator_rs::Error>(())
+/// ```
 pub trait Program: sealed::Sealed {}
 
 mod sealed {
