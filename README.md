@@ -265,12 +265,13 @@ microsecond) and `Duration` (eight integer units, `years` through
 the four kinds the reference's instruction-set text lets index a map. A
 `Context` binds root names to values.
 
-Every value a context binds is checked before anything runs, and so is a
-host function's answer: a float that is not finite (`non_finite_number`)
-and lists and maps nested past 100 levels (`depth_limit_exceeded`) are
-refused with an `EvaluationError`. Equality, ordering, cloning and dropping
-walk a value without recursion, so a deeper value the host builds is still
-compared, copied and dropped without exhausting the stack.
+Every value a context binds is checked before anything runs, and a host
+function's answer when it is given: a float that is not finite
+(`non_finite_number`) and lists and maps nested past 100 levels
+(`depth_limit_exceeded`) are refused with an `EvaluationError`. Equality,
+ordering, cloning and dropping walk a value without recursion, so a deeper
+value the host builds is still compared, copied and dropped without
+exhausting the stack.
 
 `cast` converts a value to one of the seven type names (`integer`, `float`,
 `string`, `boolean`, `date`, `datetime`, `duration`) as the reference's
