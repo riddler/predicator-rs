@@ -203,6 +203,17 @@ code says otherwise, or has no counterpart in the reference:
   lexer refuses such a literal in a source with a `ParseError`, reason
   `non_finite_number`, spanning the literal; the reference's code raises
   there.
+- **A source nests 400 levels at most** (ruled by the operator,
+  2026-11-20). The parser refuses a source that nests deeper with a
+  `ParseError`, reason `nesting_depth_exceeded`, at the token where the
+  parse stopped; the reference's parser follows a source as deep as it
+  nests. The whole expression is the first level, and each parenthesis,
+  list, object, index, call's arguments, prefix operator (`-`, `!`, `NOT`),
+  relative date's operand, block's statements, `else if`, and statement's
+  condition or value opens one more; a chain of infix operators or of
+  postfix steps (`a + b + c`, `a.b[0]::string`) opens none, however long.
+  The bound is above the 300 parentheses the reference's compile transcript
+  compiles.
 - **The column after a duration unit counts this crate's grapheme
   clusters.** The lexer reproduces the reference's column jump after a run
   of duration units, which counts grapheme clusters, using the extended
