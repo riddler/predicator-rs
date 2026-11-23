@@ -1,0 +1,39 @@
+[package]
+name = "predicator-rs"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/riddler/predicator-rs"
+readme = "README.md"
+description = "A placeholder until 0.1.0: the Rust port of the predicator condition language, compiled to a small instruction set and evaluated by a stack machine."
+keywords = ["predicate", "condition", "expression", "rules", "evaluator"]
+categories = ["parser-implementations", "algorithms"]
+include = ["/src/", "/Cargo.toml", "/README.md", "/LICENSE", "/CHANGELOG.md"]
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", default-features = false, optional = true }
+unicode-segmentation = "1"
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.11"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+indexing_slicing = "deny"
+
+[package.metadata.docs.rs]
+all-features = true
