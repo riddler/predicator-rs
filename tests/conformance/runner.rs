@@ -2,7 +2,8 @@
 //! fail, never skipped (the reference's `conformance/README.md`, "Never
 //! skip"). Its output has the shape of the reference's `schema/report.json`.
 
-use crate::corpus::{Case, Corpus, SURFACES};
+use crate::corpus::{Case, Corpus, Expected, SURFACES};
+use predicator_rs::{Context, Instructions, Options, Value};
 
 /// What one case came to.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,13 +49,42 @@ impl Report {
     }
 }
 
-/// The crate has neither an evaluator nor a compiler yet, so every case is a
-/// fail naming what is missing: the honest report the never-skip rule asks
-/// for. The surface code, when it exists, answers here.
+/// What a case comes to on `surface`. The evaluator surface runs the case's
+/// instruction list over its context with the default options and compares
+/// the answer (by strict equality) or the error's type and reason (never its
+/// message) with what the case expects. The crate has no compiler yet, so
+/// every compiler case is a fail naming the missing surface: the honest
+/// report the never-skip rule asks for.
 fn attempt(surface: &str, case: &Case) -> CaseResult {
+    let outcome = match surface {
+        "evaluator" => evaluate(case),
+        _ => Outcome::Fail(format!("{surface} not implemented")),
+    };
     CaseResult {
         id: case.id.clone(),
-        outcome: Outcome::Fail(format!("{surface} not implemented")),
+        outcome,
+    }
+}
+
+fn evaluate(case: &Case) -> Outcome {
+    let Value::Map(bindings) = &case.context else {
+        return Outcome::Fail("the case's context is not a map".to_owned());
+    };
+    let answer = Instructions::from_json(&case.instructions_json).and_then(|instructions| {
+        predicator_rs::evaluate(
+            &instructions,
+            &Context::from(bindings.clone()),
+            &Options::new(),
+        )
+    });
+    match (&case.expected, answer) {
+        (Expected::Result(want), Ok(got)) if *want == got => Outcome::Pass,
+        (Expected::Error { kind, reason }, Err(error))
+            if error.type_name() == kind && error.reason() == reason =>
+        {
+            Outcome::Pass
+        }
+        (want, got) => Outcome::Fail(format!("expected {want:?}, got {got:?}")),
     }
 }
 

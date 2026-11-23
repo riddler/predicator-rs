@@ -49,18 +49,19 @@ fn corpus() -> Corpus {
     Corpus::load(&root()).unwrap()
 }
 
-/// A run in which exactly `passes` pass on `surface` and everything else
-/// fails, as a working surface would report.
+/// A run in which exactly `passes` pass on `surface` and everything else,
+/// on both surfaces, fails, whatever the crate passes today.
 fn reports_passing(corpus: &Corpus, surface: &str, passes: &[&str]) -> Vec<Report> {
     runner::observe(corpus)
         .into_iter()
         .map(|mut report| {
-            if report.surface == surface {
-                for result in &mut report.results {
-                    if passes.contains(&result.id.as_str()) {
-                        result.outcome = Outcome::Pass;
-                    }
-                }
+            let on_surface = report.surface == surface;
+            for result in &mut report.results {
+                result.outcome = if on_surface && passes.contains(&result.id.as_str()) {
+                    Outcome::Pass
+                } else {
+                    Outcome::Fail("not passed in this run".to_owned())
+                };
             }
             report
         })
@@ -294,12 +295,26 @@ fn the_runner_answers_every_case_of_each_surface_and_skips_none() {
         assert_eq!(ids, want, "{}", report.surface);
         assert_eq!(report.corpus_hash, CORPUS_HASH);
         assert_eq!(report.tier, 10);
-        assert!(report.results.iter().all(|result| *result
-            == CaseResult {
-                id: result.id.clone(),
-                outcome: Outcome::Fail(format!("{} not implemented", report.surface)),
-            }));
     }
+    // The crate has no compiler yet: every compiler case fails naming it.
+    assert!(reports[0].results.iter().all(|result| *result
+        == CaseResult {
+            id: result.id.clone(),
+            outcome: Outcome::Fail("compiler not implemented".to_owned()),
+        }));
+    // The evaluator answers each case: a pass, or a fail saying why.
+    let evaluated = |id: &str| {
+        reports[1]
+            .results
+            .iter()
+            .find(|result| result.id == id)
+            .map(|result| result.outcome.clone())
+    };
+    assert_eq!(evaluated("comparison/gt-int-boundary"), Some(Outcome::Pass));
+    assert!(matches!(
+        evaluated("legacy/and-true-true"),
+        Some(Outcome::Fail(_))
+    ));
     let compiler = &reports[0];
     let with_source = corpus
         .cases
@@ -311,10 +326,10 @@ fn the_runner_answers_every_case_of_each_surface_and_skips_none() {
     assert_eq!(reports[1].results.len(), corpus.cases.len());
 }
 
-// Sabotage: with registry::encode writing an empty array as `[]`, this test
-// fails on the encoding check.
+// Sabotage: with registry::encode writing an entry's surface before its
+// case_id, this test fails on the encoding check.
 #[test]
-fn the_vendored_registry_passes_and_claims_nothing_yet() {
+fn the_vendored_registry_passes_and_claims_the_evaluator_at_tier_one() {
     let corpus = corpus();
     let bytes = std::fs::read(root().join(registry::FILE)).unwrap();
     assert_eq!(
@@ -322,13 +337,21 @@ fn the_vendored_registry_passes_and_claims_nothing_yet() {
         Vec::<String>::new()
     );
     let parsed = registry::parse(&bytes).unwrap();
-    assert_eq!(parsed, empty_registry(&corpus));
-    for surface in ["compiler", "evaluator"] {
-        assert_eq!(
-            registry::unentered(&corpus, surface, &parsed).len(),
-            corpus.surface_set(surface).len()
-        );
-    }
+    assert_eq!(
+        parsed.claims,
+        vec![ratchet::parse_claim("evaluator:1").unwrap()]
+    );
+    assert_eq!(parsed.corpus_hash, CORPUS_HASH);
+    assert_eq!(
+        registry::unentered(&corpus, "compiler", &parsed).len(),
+        corpus.surface_set("compiler").len()
+    );
+    assert_eq!(
+        registry::unentered(&corpus, "evaluator", &parsed).len(),
+        corpus.surface_set("evaluator").len() - parsed.entries.len()
+    );
+    // An empty array keeps its brackets on their own lines.
+    assert!(registry::encode(&empty_registry(&corpus)).starts_with("{\n\"claims\": [\n],\n"));
 }
 
 // Sabotage: with the tier comparison in registry::membership removed, this
@@ -366,7 +389,7 @@ fn an_entry_that_no_longer_passes_is_refused() {
     let problems = registry::check(
         registry::encode(&registry).as_bytes(),
         &corpus,
-        &runner::observe(&corpus),
+        &reports_passing(&corpus, "evaluator", &[]),
     );
     assert_eq!(
         problems,
@@ -484,6 +507,7 @@ fn the_ratchet_adds_observed_passes_and_refuses_a_regression() {
     let reports = reports_passing(&corpus, "evaluator", &[id]);
     let dir = copy("ratchet-adds");
     let path = dir.join(registry::FILE);
+    std::fs::write(&path, registry::encode(&empty_registry(&corpus))).unwrap();
     ratchet::write(&path, &corpus, &reports, &[]).unwrap();
     let bytes = std::fs::read(&path).unwrap();
     assert_eq!(
@@ -494,7 +518,8 @@ fn the_ratchet_adds_observed_passes_and_refuses_a_regression() {
         registry::check(&bytes, &corpus, &reports),
         Vec::<String>::new()
     );
-    let refused = ratchet::write(&path, &corpus, &runner::observe(&corpus), &[]).unwrap_err();
+    let none = reports_passing(&corpus, "evaluator", &[]);
+    let refused = ratchet::write(&path, &corpus, &none, &[]).unwrap_err();
     assert_eq!(refused, vec![format!("{id} on evaluator no longer passes")]);
     assert_eq!(std::fs::read(&path).unwrap(), bytes, "nothing was written");
 }
