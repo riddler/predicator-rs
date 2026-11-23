@@ -6,9 +6,10 @@
   compared, ordered, cloned and dropped without recursion.
 - `Key`, a map's key: a string, an integer, a boolean or undefined, in a
   stated total order.
-- `Error`, every entry point's error, over `ParseError`, `EvaluationError`,
-  `TypeMismatchError` and `UndefinedVariableError`, each with its reason, a
-  message and a `Position` where one is known.
+- `Error`, the error every entry point answers (or, from `execute` and
+  `execute_value`, the `Stopped` that holds it), over `ParseError`,
+  `EvaluationError`, `TypeMismatchError` and `UndefinedVariableError`, each
+  with its reason, a message and a `Position` where one is known.
 - `tagged::encode` and `tagged::decode` for the conformance corpus's
   tagged-value encoding, refusing an integer outside the `i64` range, a
   float that is not finite, a value nested past 100 levels and a map key
