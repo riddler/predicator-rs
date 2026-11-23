@@ -28,14 +28,16 @@
 //!
 //! let value = tagged::decode(r#"{"x":{"$type":"undefined"},"y":[1,1.0]}"#).unwrap();
 //! let Value::Map(map) = &value else { panic!() };
-//! assert_eq!(map.get("x"), Some(&Value::Undefined));
-//! assert_eq!(map.get("y"), Some(&Value::List(vec![Value::Integer(1), Value::Float(1.0)])));
+//! assert_eq!(map.get(&"x".into()), Some(&Value::Undefined));
+//! assert_eq!(map.get(&"y".into()), Some(&Value::List(vec![1.into(), 1.0.into()])));
 //! assert_eq!(tagged::encode(&value).unwrap(), r#"{"x":{"$type":"undefined"},"y":[1,1.0]}"#);
 //! ```
 
 use crate::boundary;
 use crate::json::{self, Extension, Refusal};
-use crate::{Date, DateTime, Duration, Error, EvaluationError, Map, ParseError, Position, Value};
+use crate::{
+    Date, DateTime, Duration, Error, EvaluationError, Key, Map, ParseError, Position, Value,
+};
 
 /// The units a duration's tag always carries; `milliseconds` is carried
 /// only when it is not zero.
@@ -83,6 +85,8 @@ pub fn decode(text: &str) -> Result<Value, Error> {
 ///   text that would, a tag's own braces counted;
 /// - `reserved_map_key`: a map with a `$type` key, which would read back as
 ///   a tag;
+/// - `non_string_map_key`: a map key that is not a string (an integer, a
+///   boolean or undefined), for which a JSON object has no form;
 /// - `invalid_tagged_value`: a date or an instant outside the years 0 to
 ///   9999 the encoding carries.
 ///
@@ -121,7 +125,7 @@ fn invalid(message: String) -> Refusal {
 /// The value an object stands for: the tag it carries, or the map itself
 /// when it has no `$type` key.
 pub(crate) fn untag(map: Map) -> Result<Value, Refusal> {
-    let Some(tag) = map.get("$type") else {
+    let Some(tag) = map.get_str("$type") else {
         return Ok(Value::Map(map));
     };
     let Value::String(tag) = tag else {
@@ -130,12 +134,12 @@ pub(crate) fn untag(map: Map) -> Result<Value, Refusal> {
         ));
     };
     let refused = || {
-        let keys: Vec<&str> = map.keys().collect();
+        let keys: Vec<&Key> = map.keys().collect();
         invalid(format!(
             "a {tag:?} tag with the keys {keys:?} is not a tagged value"
         ))
     };
-    let value = map.get("value");
+    let value = map.get_str("value");
     let tagged = match (tag.as_str(), map.len(), value) {
         ("undefined", 1, _) => Some(Value::Undefined),
         ("date", 2, Some(Value::String(text))) => Date::parse(text).map(Value::Date),
@@ -151,14 +155,14 @@ pub(crate) fn untag(map: Map) -> Result<Value, Refusal> {
 pub(crate) fn duration(units: &Map) -> Option<Duration> {
     let mut duration = Duration::default();
     for (name, amount) in units.iter() {
-        let Value::Integer(amount) = amount else {
+        let (Key::String(name), Value::Integer(amount)) = (name, amount) else {
             return None;
         };
         *duration.unit_mut(name)? = *amount;
     }
     REQUIRED_UNITS
         .iter()
-        .all(|unit| units.contains_key(unit))
+        .all(|unit| units.get_str(unit).is_some())
         .then_some(duration)
 }
 
@@ -175,7 +179,7 @@ pub(crate) fn carried(year: i32, text: String) -> Result<String, Refusal> {
 
 /// The refusal of a map with a `$type` key.
 pub(crate) fn check_map(map: &Map) -> Result<(), Refusal> {
-    if map.contains_key("$type") {
+    if map.get_str("$type").is_some() {
         return Err(Refusal::new(
             "reserved_map_key",
             "a map with a \"$type\" key would read back as a tag",
@@ -378,6 +382,29 @@ mod tests {
         let text = encode(&wrap(Value::from(Duration::default()), 98)).unwrap();
         assert!(decode(&text).is_ok());
         assert_eq!(reason(&format!("[{text}]")), "depth_limit_exceeded");
+    }
+
+    // Sabotage: with the writer writing a non-string key as a string key,
+    // this test fails.
+    #[test]
+    fn a_map_key_that_is_not_a_string_has_no_tagged_form() {
+        for key in [Key::from(1), Key::from(true), Key::Undefined] {
+            let map: Map = [(key, Value::Null)].into_iter().collect();
+            let refused = encode(&Value::from(vec![map.into()]))
+                .map_err(|error| (error.type_name(), error.reason().to_owned()));
+            assert_eq!(
+                refused,
+                Err(("EvaluationError", "non_string_map_key".to_owned()))
+            );
+        }
+        let decoded = decode(r#"{"1":1,"true":2,"undefined":3}"#).unwrap();
+        let Value::Map(map) = &decoded else {
+            panic!("{decoded:?}")
+        };
+        assert_eq!(map.get(&"1".into()), Some(&Value::from(1)));
+        assert_eq!(map.get(&Key::from(1)), None);
+        assert_eq!(map.get(&Key::from(true)), None);
+        assert_eq!(map.get(&Key::Undefined), None);
     }
 
     // Sabotage: with carried admitting the year 10000, this test fails.

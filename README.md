@@ -22,9 +22,12 @@ code says otherwise, or has no counterpart in the reference:
   have no bound (ruled by the operator, 2026-11-20). The tagged codec refuses
   an integer outside that range with the reason `integer_out_of_range`,
   rather than reading it as a float.
-- **A map's keys are strings**, as a JSON object's are. The reference's code
-  can also put an integer key into a map (a `store` whose path segment is an
-  integer, into a map).
+- **A map key is a string, an integer, a boolean or undefined** (`Key`), the
+  four kinds the reference's instruction-set text lets index a map; `null` is
+  not one. The tagged encoding has no form for a key that is not a string (a
+  JSON object's keys are strings), so the codec refuses one with the reason
+  `non_string_map_key`. The reference's codec writes such a key as its text
+  (`1` as `"1"`), which reads back as a string key.
 - **A duration is one kind of value**: the map of its eight units, `years`
   through `milliseconds`, the same whether a literal, an instruction or the
   host made it, as the reference's instruction-set text states it. A unit may

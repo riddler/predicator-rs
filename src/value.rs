@@ -1,7 +1,7 @@
 //! The value domain: what a context holds, an instruction pushes and an
 //! evaluation answers.
 
-use crate::{Date, DateTime, Duration, Map};
+use crate::{Date, DateTime, Duration, Key, Map};
 use core::cmp::Ordering;
 use core::fmt;
 
@@ -53,7 +53,7 @@ pub enum Value {
     String(String),
     /// A list.
     List(Vec<Value>),
-    /// A map from string keys.
+    /// A map from [`Key`]s.
     Map(Map),
     /// A civil date.
     Date(Date),
@@ -110,7 +110,7 @@ enum Copy<'a> {
     /// Gather the last `count` built values into a list.
     List(usize),
     /// Gather the last built values, one per key, into a map.
-    Map(Vec<&'a String>),
+    Map(Vec<&'a Key>),
 }
 
 impl Clone for Value {
@@ -274,7 +274,7 @@ impl PartialOrd for Value {
 enum Piece<'a> {
     Value(&'a Value),
     Text(&'static str),
-    Key(&'a str),
+    Key(&'a Key),
 }
 
 impl fmt::Debug for Value {
@@ -435,6 +435,10 @@ mod tests {
         let map = |key: &str| Value::from([(key, Value::Null)].into_iter().collect::<Map>());
         assert_ne!(map("a"), map("b"));
         assert_ne!(map("a"), Value::from(Map::new()));
+        let keyed = |key: Key| Value::from([(key, Value::Null)].into_iter().collect::<Map>());
+        assert_ne!(keyed(Key::from(1)), keyed(Key::from("1")));
+        assert_ne!(keyed(Key::from(true)), keyed(Key::from("true")));
+        assert_eq!(keyed(Key::Undefined), keyed(Key::Undefined));
         assert_ne!(
             Value::from([("a", Value::from(1))].into_iter().collect::<Map>()),
             Value::from([("a", Value::from(2))].into_iter().collect::<Map>())
