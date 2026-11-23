@@ -166,8 +166,11 @@ code says otherwise, or has no counterpart in the reference:
 - **Integers are 64-bit.** An integer is an `i64`; the reference's integers
   have no bound (ruled by the operator, 2026-11-20). The tagged codec refuses
   an integer outside that range with the reason `integer_out_of_range`,
-  rather than reading it as a float. Every integer step is checked: `add`,
-  `subtract`, `multiply` or `divide` on two integers whose result is outside
+  rather than reading it as a float, and so does the lexer an integer
+  literal in a source (a `ParseError` spanning the literal), where the
+  reference's code reads an integer of any size. Every integer step is
+  checked: `add`, `subtract`, `multiply` or `divide` on two integers whose
+  result is outside
   that range, and `unary_minus` on the least `i64`, fail with an
   `EvaluationError`, reason `integer_overflow`, never a wrapped or rounded
   number. (`modulo` cannot leave the range: the least `i64` modulo `-1` is
@@ -196,6 +199,17 @@ code says otherwise, or has no counterpart in the reference:
   instruction-set text names an ISO 8601 datetime, which separates the date
   from the time with a `T`; the reference's code also reads a space there
   (`2026-08-09 10:00:00Z`), and this crate's tagged codec still does.
+- **A decimal literal too large for a finite float is refused.** The
+  lexer refuses such a literal in a source with a `ParseError`, reason
+  `non_finite_number`, spanning the literal; the reference's code raises
+  there.
+- **The column after a duration unit counts this crate's grapheme
+  clusters.** The lexer reproduces the reference's column jump after a run
+  of duration units, which counts grapheme clusters, using the extended
+  grapheme clusters of the Unicode version `unicode-segmentation`
+  implements; a character only a newer Unicode version assigns can join a
+  cluster here that it does not join in the reference's runtime, moving the
+  columns after it by one.
 - **A float result that is not finite is refused.** `add`, `subtract`,
   `multiply` or `divide` whose float result overflows fails with an
   `EvaluationError`, reason `non_finite_number`; the reference's code raises
