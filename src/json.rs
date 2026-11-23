@@ -48,6 +48,22 @@ pub(crate) enum Shape {
     Literal { start: usize, length: usize },
     /// After a whole value that ends at `end` and is followed by more text.
     Trailing { end: usize },
+    /// In the `\u` escape whose backslash is at `start`.
+    Escape { start: usize },
+}
+
+/// What the reference's reader answers for a fault, as [`reference_fault`]
+/// reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReferenceFault {
+    /// The reference's own text: a byte it refuses, or an early end.
+    Text(String),
+    /// A fault the reference answers with its runtime's own error term, or
+    /// answers a value for, which this crate refuses by name.
+    Named {
+        reason: &'static str,
+        message: String,
+    },
 }
 
 /// A list or an object the reader is inside.
@@ -240,7 +256,11 @@ impl Reader<'_> {
                         Some(b't') => '\t',
                         Some(b'u') => {
                             self.at += 1;
-                            text.push(self.unicode_escape(start)?);
+                            let escaped = self.unicode_escape(start).map_err(|fault| Fault {
+                                shape: Shape::Escape { start },
+                                ..fault
+                            })?;
+                            text.push(escaped);
                             run = self.at;
                             continue;
                         }
@@ -391,23 +411,37 @@ pub(crate) fn read(
     }
 }
 
-/// The reference's own text for `fault`, a fault of the plain JSON `text`,
-/// where its reader names a byte or the end of the text: the byte at the
-/// offset the reference names (`unexpected byte 0x6F at position 1`), or
-/// the end, which it places at the text's length (`unexpected end of input
-/// at position 3`). Two places differ from where this reader stops: a
-/// literal that does not match is named at its second byte, or at the end
-/// when the text is too short to hold it, whichever byte broke the match;
-/// and text after a whole value is named at the first byte after the
-/// value, whitespace included. Any other fault (an integer outside `i64`, a
-/// float that is not finite, a malformed `\u` escape, a text nested past the
-/// depth limit) keeps this reader's own text, the reference's reader having
-/// no counterpart this crate can give.
-pub(crate) fn reference_fault(text: &str, fault: &Fault) -> String {
+/// What the reference's reader answers for `fault`, a fault of the plain
+/// JSON `text`.
+///
+/// Where the reference names a byte or the end of the text, this is its
+/// text: the byte at the offset it names (`unexpected byte 0x6F at position
+/// 1`), or the end, which it places at the text's length (`unexpected end
+/// of input at position 3`). Three places differ from where this reader
+/// stops:
+///
+/// - a literal that does not match is named at its second byte, or at the
+///   end when the text is too short to hold it, whichever byte broke the
+///   match;
+/// - text after a whole value is named at the first byte after the value,
+///   whitespace included;
+/// - a `\u` escape too short to hold its four digits is named at the end; a
+///   high surrogate not followed by a second `\u` escape is named at the
+///   end when the text from its backslash on is shorter than twelve bytes,
+///   else at the byte after it.
+///
+/// Where the reference answers with its runtime's own error term (an
+/// escape whose digits are not hex, a lone low surrogate, a high surrogate
+/// followed by an escape that is not a low one, a number too large for a
+/// finite float) or answers a value (an integer outside `i64`, a text
+/// nested past the depth limit), the fault is refused by name.
+pub(crate) fn reference_fault(text: &str, fault: &Fault) -> ReferenceFault {
     let bytes = text.as_bytes();
-    let at = |offset: usize| match bytes.get(offset) {
-        Some(byte) => format!("unexpected byte 0x{byte:02X} at position {offset}"),
-        None => format!("unexpected end of input at position {}", bytes.len()),
+    let at = |offset: usize| {
+        ReferenceFault::Text(match bytes.get(offset) {
+            Some(byte) => format!("unexpected byte 0x{byte:02X} at position {offset}"),
+            None => format!("unexpected end of input at position {}", bytes.len()),
+        })
     };
     match fault.shape {
         Shape::Literal { start, length } if bytes.len() <= start.saturating_add(length) => {
@@ -415,10 +449,41 @@ pub(crate) fn reference_fault(text: &str, fault: &Fault) -> String {
         }
         Shape::Literal { start, .. } => at(start.saturating_add(1)),
         Shape::Trailing { end } => at(end),
-        Shape::Plain if fault.offset >= bytes.len() && fault.refusal.reason == "malformed_json" => {
-            at(bytes.len())
+        Shape::Escape { start } => escape_fault(bytes, start).unwrap_or_else(at),
+        Shape::Plain if fault.refusal.reason != "malformed_json" => ReferenceFault::Named {
+            reason: fault.refusal.reason,
+            message: fault.refusal.message.clone(),
+        },
+        Shape::Plain if fault.offset >= bytes.len() => at(bytes.len()),
+        Shape::Plain => ReferenceFault::Text(fault.refusal.message.clone()),
+    }
+}
+
+/// The reference's answer for a fault in the `\u` escape whose backslash is
+/// at `start`: `Err` with the offset of the byte or end it names, or `Ok`
+/// with the named refusal of an escape it answers with its runtime's own
+/// error term.
+fn escape_fault(bytes: &[u8], start: usize) -> Result<ReferenceFault, usize> {
+    let hex = |from: usize| {
+        let digits = bytes.get(from..from.saturating_add(4))?;
+        u32::from_str_radix(core::str::from_utf8(digits).ok()?, 16).ok()
+    };
+    let unnamed = ReferenceFault::Named {
+        reason: "invalid_unicode_escape",
+        message: format!("the escape at position {start} names no character"),
+    };
+    if bytes.len() < start.saturating_add(6) {
+        return Err(bytes.len());
+    }
+    match hex(start.saturating_add(2)) {
+        Some(0xD800..=0xDBFF) if bytes.len() <= start.saturating_add(11) => Err(bytes.len()),
+        Some(0xD800..=0xDBFF)
+            if bytes.get(start.saturating_add(6)..start.saturating_add(8))
+                != Some(br"\u".as_slice()) =>
+        {
+            Err(start.saturating_add(6))
         }
-        Shape::Plain => fault.refusal.message.clone(),
+        _ => Ok(unnamed),
     }
 }
 

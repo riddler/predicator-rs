@@ -14,7 +14,7 @@
 //! for `len` and `substring`; `index_of` answers in the same unit
 //! ([`cluster_index`]).
 
-use crate::json::{self, Extension, Refusal};
+use crate::json::{self, Extension, ReferenceFault, Refusal};
 use crate::value::integer_against_float;
 use crate::{DateTime, Duration, EvaluationError, Key, Map, Value};
 use core::cmp::Ordering;
@@ -473,11 +473,15 @@ fn now(_: &[Value], run: &mut dyn Run) -> Result<Value, EvaluationError> {
     run.now().map(Value::DateTime)
 }
 
-/// How `JSON.stringify` writes what plain JSON has no form for, as the
-/// reference's encoder writes it: undefined as the string `"undefined"`, a
-/// date and an instant as their text, a duration as the map of its eight
-/// units; and a map's keys as text, in the reference's order (integers,
-/// then `false`, `true` and undefined, then strings).
+/// How `JSON.stringify` writes what plain JSON has no form for: undefined
+/// as the string `"undefined"` and a date and an instant as their text, as
+/// the reference's encoder writes them, and a duration as the map of its
+/// eight units by name. A map's keys are written as text, sorted in the
+/// order the reference's encoder writes a map of up to 32 keys in
+/// (integers, then `false`, `true` and undefined, then strings); this crate
+/// writes every map in that order, and a duration's units by name, where
+/// the reference's order for a larger map and for a duration's units is
+/// its runtime's own.
 struct Stringify;
 
 /// A key's place in the reference's order of map keys.
@@ -528,7 +532,7 @@ impl Extension for Stringify {
     }
 }
 
-/// A duration as the map of its eight units, in key order.
+/// A duration as the map of its eight units, sorted by name.
 fn duration_text(duration: &Duration) -> String {
     let mut units: Vec<(&str, i64)> = duration
         .units()
@@ -554,20 +558,21 @@ fn stringify(arguments: &[Value], _: &mut dyn Run) -> Result<Value, EvaluationEr
         .map_err(|refusal| EvaluationError::new(refusal.reason, refusal.message))
 }
 
-/// Plain JSON: every object a map, a `$type` key included. A text the
-/// reference's reader refuses fails with its message (`Invalid JSON:
-/// unexpected byte 0x6F at position 1`) as the reason; an integer outside
-/// `i64`, a float that is not finite and a text nested past the depth limit
-/// fail with the reader's own reason.
+/// Plain JSON: every object a map, a `$type` key included. Where the
+/// reference's reader names a byte or an early end, the text fails with its
+/// message (`Invalid JSON: unexpected byte 0x6F at position 1`) as the
+/// reason; every other fault fails with a named reason
+/// ([`json::reference_fault`]).
 fn parse(arguments: &[Value], _: &mut dyn Run) -> Result<Value, EvaluationError> {
     let [Value::String(text)] = arguments else {
         return Err(refused("JSON.parse expects a string argument"));
     };
     json::read(text, &|map| Ok(Value::Map(map))).map_err(|fault| {
-        let message = format!("Invalid JSON: {}", json::reference_fault(text, &fault));
-        match fault.refusal.reason {
-            "malformed_json" => refused(message),
-            reason => EvaluationError::new(reason, message),
+        match json::reference_fault(text, &fault) {
+            ReferenceFault::Text(fault) => refused(format!("Invalid JSON: {fault}")),
+            ReferenceFault::Named { reason, message } => {
+                EvaluationError::new(reason, format!("Invalid JSON: {message}"))
+            }
         }
     })
 }
@@ -1096,6 +1101,15 @@ mod tests {
             ("[]]", "unexpected byte 0x5D at position 2"),
             ("{}x", "unexpected byte 0x78 at position 2"),
             ("x", "unexpected byte 0x78 at position 0"),
+            ("\"\\ud800\"", "unexpected end of input at position 8"),
+            ("\"\\ud800x\"", "unexpected end of input at position 9"),
+            ("\"\\ud800xxxxxxxx\"", "unexpected byte 0x78 at position 7"),
+            ("\"\\ud800abcdefgh\"", "unexpected byte 0x61 at position 7"),
+            ("[\"\\ud800\", 1]", "unexpected end of input at position 13"),
+            ("\"ab\\ud800\"", "unexpected end of input at position 10"),
+            ("\"\\ud800\\u\"", "unexpected end of input at position 10"),
+            ("\"\\ud800\\n\"", "unexpected end of input at position 10"),
+            ("\"\\u00\"", "unexpected end of input at position 6"),
         ];
         for (input, fault) in pinned {
             let message = format!("Invalid JSON: {fault}");
@@ -1115,9 +1129,31 @@ mod tests {
             reason("JSON.parse", &[text(&"[".repeat(101))]),
             "depth_limit_exceeded"
         );
+        // Where the reference answers its runtime's own error term, the
+        // fault is refused by name.
+        for input in [
+            "\"\\u12G4\"",
+            "\"a\\u12G4\"",
+            "\"\\udc00\"",
+            "\"\\ud800\\u0041\"",
+            "\"\\ud800\\uZZZZ\"",
+            "\"\\ud800\\ud800\"",
+        ] {
+            assert_eq!(
+                reason("JSON.parse", &[text(input)]),
+                "invalid_unicode_escape",
+                "{input:?}"
+            );
+        }
         assert_eq!(
-            reason("JSON.parse", &[text("\"\\ud800\"")]),
-            "Invalid JSON: a lone surrogate escape at position 1"
+            call("JSON.parse", &[text("\"a\\u12G4\"")])
+                .unwrap_err()
+                .message(),
+            "Invalid JSON: the escape at position 2 names no character"
+        );
+        assert_eq!(
+            answer("JSON.parse", &[text("\"\\ud800\\udc00\"")]),
+            text("\u{10000}")
         );
         assert_eq!(
             reason("JSON.parse", &[1.into()]),

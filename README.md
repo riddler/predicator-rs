@@ -7,14 +7,16 @@ small instruction set and evaluate it on a stack machine, with the same
 answers as the reference implementation on its shared conformance corpus.
 
 The published 0.0.0 is a placeholder that reserves the crate name; the first
-usable version is 0.1.0. What the source holds so far is the value model(`Value` and its types), the errors, the codec for the conformance corpus's
+usable version is 0.1.0. What the source holds so far is the value model
+(`Value` and its types), the errors, the codec for the conformance corpus's
 tagged-value encoding (`tagged`), and the evaluator:
 `evaluate` runs an instruction list (`Instructions`, read from JSON in the
 tagged encoding) over a `Context`, with `Options` passed per call. It runs
 the instruction set's first five tiers: `lit`, `load`, `compare`, `not`,
 `unary_bang`, `unary_minus`, `jump_if_falsy_or_pop` and
 `jump_if_true_or_pop`; the arithmetic `add`, `subtract`, `multiply`,
-`divide` and `modulo`; `access`, `bracket_access`, `in`, `contains` and`make_list`; `object_new`, `object_set`, `duration` and
+`divide` and `modulo`; `access`, `bracket_access`, `in`, `contains` and
+`make_list`; `object_new`, `object_set`, `duration` and
 `relative_date`; and `call`. It refuses every other opcode as `unknown_instruction` until a
 later version adds it (the retired `and` and `or` as `retired_opcode`). A variable the context does not bind
 reads as undefined, and the evaluation fails with an `UndefinedVariableError`
@@ -24,7 +26,8 @@ when undefined is its answer or an instruction refuses it; with
 `relative_date` reads the current time from the clock the options name
 (`Options::new().clock(|| ...)`, a callable answering an
 `Option<DateTime>`), or from the system clock when they name none. A run
-reads the clock at most once, the first time the program reads the time, andnever when it does not; a clock that answers `None` fails the run with an
+reads the clock at most once, the first time the program reads the time, and
+never when it does not; a clock that answers `None` fails the run with an
 `EvaluationError`, reason `clock_unavailable`.
 
 `call` runs the reference's function library: `len`, `upper`, `lower`,
@@ -148,7 +151,8 @@ code says otherwise, or has no counterpart in the reference:
   can record a different precision for the same instant.
 - **A float that is not finite is refused** where a value crosses into the
   crate, with the reason `non_finite_number`; the reference's floats cannot
-  hold one.- **`index_of` counts grapheme clusters**, as `len` and `substring` do: it
+  hold one.
+- **`index_of` counts grapheme clusters**, as `len` and `substring` do: it
   answers the index of the first cluster of the first occurrence that is a
   run of whole clusters (an occurrence starting or ending inside a cluster
   is passed over), or `-1`. The reference's code answers a byte offset there
@@ -173,20 +177,26 @@ code says otherwise, or has no counterpart in the reference:
   (ruled by the operator, 2026-11-20). The reference's functions also
   receive the run's context, and a host's function there declares an arity
   the evaluator checks.
-- **`JSON.stringify` writes what the reference's encoder writes** (keys in
-  the reference's order, integers first, then `false`, `true` and
-  undefined as text, then strings; a date and an instant as their text,
-  undefined as `"undefined"`, a duration as the map of its eight units) and
-  refuses only a value nested past 100 levels, with the reason
+- **`JSON.stringify` sorts every map's keys, and a duration's units by
+  name.** It writes a date and an instant as their text and undefined as
+  `"undefined"`, as the reference's encoder does, and a map's keys as text
+  in the order that encoder writes a map of up to 32 keys in: integers
+  first, then `false`, `true` and undefined, then strings. This crate
+  writes every map in that order, and a duration as the map of its eight
+  units sorted by name; the reference's encoder writes a map of more than
+  32 keys, and a duration's units, in its runtime's own order. It refuses
+  only a value nested past 100 levels, with the reason
   `depth_limit_exceeded`; the reference's code never refuses.
-- **`JSON.parse` reports the reference's fault text** for a byte its reader
-  refuses and for an early end (`Invalid JSON: unexpected byte 0x6F at
-  position 1`, as the reason). An integer outside `i64` fails with the
-  reason `integer_out_of_range`, a number too large for a finite float with
-  `non_finite_number`, and a text nested past 100 levels with
-  `depth_limit_exceeded`, where the reference answers a value; a malformed
-  `\u` escape is refused with this crate's own text, where the reference
-  writes its runtime's error term.
+- **`JSON.parse` reports the reference's fault text where the reference
+  names a byte or an early end** (`Invalid JSON: unexpected byte 0x6F at
+  position 1`, as the reason), a lone high surrogate escape included. An
+  integer outside `i64` fails with the reason `integer_out_of_range` and a
+  text nested past 100 levels with `depth_limit_exceeded`, where the
+  reference answers a value. Where the reference answers with its
+  runtime's own error term, this crate refuses by name: a number too large
+  for a finite float with `non_finite_number`, and a `\u` escape whose
+  digits are not hex, a lone low surrogate, or a high surrogate followed by
+  an escape that is not a low one with `invalid_unicode_escape`.
 - **Values are bounded at 100 levels.** Lists and maps nested past 100 levels
   are refused where a value crosses into the crate and by the tagged codec,
   with the reason `depth_limit_exceeded`; the reference has no bound. A
