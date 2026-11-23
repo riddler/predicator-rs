@@ -83,8 +83,8 @@ fn entry(surface: &str, tier: u64, case_id: &str) -> Entry {
     }
 }
 
-// Sabotage: with checks::superseded_summary counting every transcript row,
-// this test fails.
+// Sabotage: with checks::superseded_summary's total off by one, this test
+// fails.
 #[test]
 fn the_vendored_copies_match_their_records() {
     let dir = root();
@@ -447,8 +447,8 @@ fn a_compiler_entry_for_a_case_without_a_source_is_refused() {
     );
 }
 
-// Sabotage: with registry::duplicates' count threshold raised to 2, this
-// test fails.
+// Sabotage: with registry::duplicates counting each pair once, this test
+// fails.
 #[test]
 fn an_entry_listed_twice_and_out_of_order_is_refused() {
     let corpus = corpus();
