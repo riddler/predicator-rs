@@ -709,3 +709,35 @@ fn streams_the_lexer_never_writes_are_refused() {
         "Expected a duration unit after number '1.5'"
     );
 }
+
+// A prefix operator gives its level back once its operand is read, so a
+// flat run of negated or negative items longer than DEPTH_LIMIT parses in a
+// sum, a list, a call's arguments, an object, an AND chain and an OR
+// chain, while prefixes nested inside each other still count one level
+// each.
+// Sabotage: with `apply` not giving back the level of a prefix `-`, `!` or
+// `NOT`, this test fails on the sum of negated terms.
+#[test]
+fn a_flat_run_of_prefixed_items_costs_no_depth() {
+    let count = DEPTH_LIMIT + 50;
+    let items = |item: &dyn Fn(usize) -> String| (0..count).map(item).collect::<Vec<_>>();
+    let sources = [
+        format!("x{}", " + -x".repeat(count - 1)),
+        format!("[{}]", items(&|_| "-1".to_owned()).join(", ")),
+        format!("f({})", items(&|_| "-1".to_owned()).join(", ")),
+        format!("{{{}}}", items(&|at| format!("k{at}: -1")).join(", ")),
+        format!("a{}", " AND !a".repeat(count - 1)),
+        format!("a{}", " OR NOT a".repeat(count - 1)),
+    ];
+    for source in &sources {
+        let tokens = tokenize(source).unwrap();
+        assert!(parse(&tokens).is_ok(), "{source:.40}");
+        assert!(parse_program(&tokens).is_ok(), "{source:.40}");
+    }
+    for prefix in ["-", "!", "NOT "] {
+        let deepest = format!("{}x", prefix.repeat(DEPTH_LIMIT - 1));
+        assert!(parse(&tokenize(&deepest).unwrap()).is_ok(), "{prefix}");
+        let deeper = format!("{}x", prefix.repeat(DEPTH_LIMIT));
+        assert_eq!(reason(&deeper, false), "nesting_depth_exceeded", "{prefix}");
+    }
+}
