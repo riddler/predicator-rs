@@ -6,15 +6,18 @@
 //! [`Error`] every entry point answers, and the [`tagged`] codec for the
 //! conformance corpus's tagged-value encoding.
 //!
-//! The evaluator runs the instruction set's first four tiers so far:
+//! The evaluator runs the instruction set's first five tiers so far:
 //! [`evaluate`] runs [`Instructions`] (read with
 //! [`Instructions::from_json`]) over a [`Context`] with the [`Options`]
 //! given per call, answering a [`Value`]. It runs `lit`, `load`, `compare`,
 //! `not`, `unary_bang`, `unary_minus`, `jump_if_falsy_or_pop` and
 //! `jump_if_true_or_pop`; `add`, `subtract`, `multiply`, `divide` and
 //! `modulo`; `access`, `bracket_access`, `in`, `contains` and `make_list`;
-//! and `object_new`, `object_set`, `duration` and `relative_date`, which
-//! reads the current time from the clock the [`Options`] name. Every other opcode is refused as `unknown_instruction`, and
+//! `object_new`, `object_set`, `duration` and `relative_date`, which
+//! reads the current time from the clock the [`Options`] name; and `call`,
+//! which calls a function the [`Options`] pass in by name
+//! ([`Options::function`]) or one of the reference's library functions
+//! (the string, list, math, date and JSON functions). Every other opcode is refused as `unknown_instruction`, and
 //! the retired `and` and `or` as `retired_opcode`. The compiler is to come.
 //!
 //! With the `serde` feature (off by default), [`Value`] implements
