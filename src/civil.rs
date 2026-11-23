@@ -372,6 +372,153 @@ impl Duration {
             _ => None,
         }
     }
+
+    /// Reads the duration-literal grammar as the reference's duration
+    /// parser reads it: the whole text is one or more pairs of an amount
+    /// and a unit, the amount `[0-9]+` with an optional fraction
+    /// `\.[0-9]+`, the unit `mo`, `ms`, `y`, `w`, `d`, `h`, `m` or `s`
+    /// (the two-letter units tried first). No sign, no space, no empty
+    /// text. A repeated unit adds to the amount before it. A fraction must
+    /// come to a whole count of milliseconds: the whole part keeps its own
+    /// unit and the rest is spread largest first over days, hours,
+    /// minutes, seconds and milliseconds (a month 30 days, a year 365), so
+    /// `0.5mo` is 15 days. A unit whose amount is outside `i64` is
+    /// [`DurationText::Overflow`].
+    pub(crate) fn parse(text: &str) -> Result<Duration, DurationText> {
+        let mut duration = Duration::default();
+        let mut rest = text.as_bytes();
+        if rest.is_empty() {
+            return Err(DurationText::Malformed);
+        }
+        while !rest.is_empty() {
+            let (whole, after) = digit_run(rest);
+            let (fraction, after) = match after.split_first() {
+                Some((b'.', after)) => match digit_run(after) {
+                    ([], _) => return Err(DurationText::Malformed),
+                    run => run,
+                },
+                _ => (&[][..], after),
+            };
+            if whole.is_empty() {
+                return Err(DurationText::Malformed);
+            }
+            let (unit, after) = duration_unit(after).ok_or(DurationText::Malformed)?;
+            duration.add_component(whole, fraction, unit)?;
+            rest = after;
+        }
+        Ok(duration)
+    }
+
+    /// Adds one `whole.fraction` amount of `unit` (its suffix).
+    fn add_component(
+        &mut self,
+        whole: &[u8],
+        fraction: &[u8],
+        unit: &str,
+    ) -> Result<(), DurationText> {
+        let amount = whole.iter().try_fold(0_i64, |amount, digit| {
+            amount.checked_mul(10)?.checked_add(i64::from(digit - b'0'))
+        });
+        self.add_unit(unit, amount.ok_or(DurationText::Overflow)?)?;
+        // Trailing zeros of a fraction change nothing; past eleven more
+        // digits no unit's milliseconds can clear the denominator.
+        let mut fraction = fraction;
+        while let Some((b'0', head)) = fraction.split_last() {
+            fraction = head;
+        }
+        if fraction.is_empty() {
+            return Ok(());
+        }
+        if fraction.len() > 11 {
+            return Err(DurationText::Malformed);
+        }
+        let numerator = fraction
+            .iter()
+            .fold(0_i128, |sum, digit| sum * 10 + i128::from(digit - b'0'));
+        let denominator = fraction.iter().fold(1_i128, |power, _| power * 10);
+        let total = numerator * unit_milliseconds(unit);
+        if total % denominator != 0 {
+            return Err(DurationText::Malformed);
+        }
+        let mut left = total / denominator;
+        for (suffix, size) in [
+            ("d", 86_400_000),
+            ("h", 3_600_000),
+            ("m", 60_000),
+            ("s", 1_000),
+            ("ms", 1),
+        ] {
+            let count = left / size;
+            left %= size;
+            if count > 0 {
+                self.add_unit(
+                    suffix,
+                    i64::try_from(count).map_err(|_| DurationText::Overflow)?,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Adds `amount` to the unit whose suffix is `suffix`.
+    fn add_unit(&mut self, suffix: &str, amount: i64) -> Result<(), DurationText> {
+        let slot = match suffix {
+            "y" => &mut self.years,
+            "mo" => &mut self.months,
+            "w" => &mut self.weeks,
+            "d" => &mut self.days,
+            "h" => &mut self.hours,
+            "m" => &mut self.minutes,
+            "s" => &mut self.seconds,
+            _ => &mut self.milliseconds,
+        };
+        *slot = slot.checked_add(amount).ok_or(DurationText::Overflow)?;
+        Ok(())
+    }
+}
+
+/// Why a text is not a duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DurationText {
+    /// The text is not the duration-literal grammar, or a fraction leaves
+    /// less than a millisecond over.
+    Malformed,
+    /// A unit's amount is outside `i64`.
+    Overflow,
+}
+
+/// The leading ASCII digits of `bytes`, and what follows them.
+fn digit_run(bytes: &[u8]) -> (&[u8], &[u8]) {
+    let count = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    bytes.split_at_checked(count).unwrap_or((bytes, &[]))
+}
+
+/// The duration unit `bytes` starts with, two-letter units first, and what
+/// follows it.
+fn duration_unit(bytes: &[u8]) -> Option<(&'static str, &[u8])> {
+    for unit in ["mo", "ms", "y", "w", "d", "h", "m", "s"] {
+        if let Some(rest) = bytes.strip_prefix(unit.as_bytes()) {
+            return Some((unit, rest));
+        }
+    }
+    None
+}
+
+/// The milliseconds in one of `unit`, a month 30 days and a year 365.
+fn unit_milliseconds(unit: &str) -> i128 {
+    match unit {
+        "y" => 31_536_000_000,
+        "mo" => 2_592_000_000,
+        "w" => 604_800_000,
+        "d" => 86_400_000,
+        "h" => 3_600_000,
+        "m" => 60_000,
+        "s" => 1_000,
+        _ => 1,
+    }
 }
 
 impl fmt::Display for Duration {
@@ -663,5 +810,116 @@ mod tests {
         }
         assert!(written.units().iter().all(|(_, _, amount)| *amount == 1));
         assert!(written.unit_mut("fortnights").is_none());
+    }
+
+    /// The duration `text` reads as, its text, or why it is refused.
+    fn read(text: &str) -> String {
+        match Duration::parse(text) {
+            Ok(duration) => format!("{duration:?}"),
+            Err(why) => format!("{why:?}"),
+        }
+    }
+
+    fn of(duration: Duration) -> String {
+        format!("{duration:?}")
+    }
+
+    // Sabotage: with a fraction's remainder truncated to the millisecond
+    // rather than refused, this test fails.
+    #[test]
+    fn a_duration_reads_the_literal_grammar_with_its_fractions() {
+        assert_eq!(
+            read("3d8h30m"),
+            of(Duration {
+                days: 3,
+                hours: 8,
+                minutes: 30,
+                ..Duration::default()
+            })
+        );
+        assert_eq!(
+            read("1mo1ms1m"),
+            of(Duration {
+                months: 1,
+                milliseconds: 1,
+                minutes: 1,
+                ..Duration::default()
+            })
+        );
+        assert_eq!(
+            read("1d2d"),
+            of(Duration {
+                days: 3,
+                ..Duration::default()
+            })
+        );
+        assert_eq!(read("0s"), of(Duration::default()));
+        assert_eq!(
+            read("1.5s"),
+            of(Duration {
+                seconds: 1,
+                milliseconds: 500,
+                ..Duration::default()
+            })
+        );
+        assert_eq!(
+            read("0.5mo"),
+            of(Duration {
+                days: 15,
+                ..Duration::default()
+            })
+        );
+        assert_eq!(
+            read("0.5y"),
+            of(Duration {
+                days: 182,
+                hours: 12,
+                ..Duration::default()
+            })
+        );
+        assert_eq!(
+            read("1.25d0.5d"),
+            of(Duration {
+                days: 1,
+                hours: 18,
+                ..Duration::default()
+            })
+        );
+        assert_eq!(
+            read(&format!("2.{}s", "0".repeat(40))),
+            of(Duration {
+                seconds: 2,
+                ..Duration::default()
+            })
+        );
+        assert_eq!(
+            read("0.00000000001mo"),
+            "Malformed",
+            "eleven digits leave less than a millisecond"
+        );
+        assert_eq!(
+            read("0.0009765625mo"),
+            of(Duration {
+                minutes: 42,
+                seconds: 11,
+                milliseconds: 250,
+                ..Duration::default()
+            })
+        );
+        for refused in [
+            "", "0.5ms", "1.s", ".5s", "1", "d", "1d ", " 1d", "-1d", "1x", "1mos", "1d\n", "1D",
+        ] {
+            assert_eq!(read(refused), "Malformed", "{refused:?}");
+        }
+        assert_eq!(read("9223372036854775808s"), "Overflow");
+        assert_eq!(read("9223372036854775807d1d"), "Overflow");
+        assert_eq!(read("9223372036854775807h0.5d"), "Overflow");
+        assert_eq!(
+            read("9223372036854775807ms"),
+            of(Duration {
+                milliseconds: i64::MAX,
+                ..Duration::default()
+            })
+        );
     }
 }

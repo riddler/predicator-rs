@@ -12,15 +12,15 @@ usable version is 0.1.0. What the source holds so far is the value model
 tagged-value encoding (`tagged`), and the evaluator:
 `evaluate` runs an instruction list (`Instructions`, read from JSON in the
 tagged encoding) over a `Context`, with `Options` passed per call. It runs
-every tier of the instruction set but casts (tier 7) and presence and
-overlap (tier 10): `lit`, `load`, `compare`, `not`,
+every tier of the instruction set: `lit`, `load`, `compare`, `not`,
 `unary_bang`, `unary_minus`, `jump_if_falsy_or_pop` and
 `jump_if_true_or_pop`; the arithmetic `add`, `subtract`, `multiply`,
 `divide` and `modulo`; `access`, `bracket_access`, `in`, `contains` and
 `make_list`; `object_new`, `object_set`, `duration` and
-`relative_date`; `call`; `store` and `pop`; `jump` and
-`pop_jump_if_falsy`; and `jump_backward`. It refuses every other opcode as
-`unknown_instruction` until a later version adds it (the retired `and` and `or` as `retired_opcode`). A variable the context does not bind
+`relative_date`; `call`; `store` and `pop`; `cast`; `jump` and
+`pop_jump_if_falsy`; `jump_backward`; and `presence` and `intersects`. It
+refuses every other opcode as `unknown_instruction` (the retired `and` and
+`or` as `retired_opcode`). A variable the context does not bind
 reads as undefined, and the evaluation fails with an `UndefinedVariableError`
 when undefined is its answer or an instruction refuses it; with
 `Options::new().on_unbound(OnUnbound::Error)` the load itself fails.
@@ -65,6 +65,34 @@ callable answering 64 random bits; without one it draws from a source seeded
 from the standard library's per-process hash keys, which needs no
 dependency and is not cryptographic. `Date.now` reads the run's clock, as
 `relative_date` does.
+
+## Casts, presence and overlap
+
+`cast` converts a value to one of the seven type names (`integer`, `float`,
+`string`, `boolean`, `date`, `datetime`, `duration`) as the reference's
+conversion matrix states it: undefined casts to undefined, and a value that
+cannot become one of the target type, `null`, a list and a map included,
+casts to undefined rather than failing. A string is read whole, with no
+trimming: an integer as `-?[0-9]+`, a float as `-?[0-9]+(\.[0-9]+)?`, a
+boolean as exactly `true` or `false`, a date as `YYYY-MM-DD`, an instant as
+the reference reads one (a `T` or a space before the time, a fraction after
+a full stop or a comma, read to the microsecond, and an offset of `Z`,
+`+HH:MM`, `+HHMM` or `+HH`, either sign), and a duration as the
+duration-literal grammar, fractions included (`"1.5s"` is a second and 500
+milliseconds). A float is written as the reference writes one (`1.0e16`,
+`0.0001`), and an instant in UTC with its fraction left out when it is zero
+and six digits when it is not.
+
+`presence` answers `x is blank` (`["presence","blank"]`) and `x is defined`
+(`["presence","defined"]`) for every value and never fails. Blank is
+undefined, `null`, an empty list, a map with no keys, and a string that is
+empty or holds only the Unicode White_Space code points the reference lists
+(U+0009 to U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000 to U+200A,
+U+2028, U+2029, U+202F, U+205F and U+3000), matched code point by code point
+rather than through Rust's own trim; a zero-width space (U+200B) is not one
+of them. Every other value, `0`, `false` and a zero duration included, is
+not blank. `intersects` answers whether two lists share a member under the
+equality `in` uses, and undefined when either operand is not a list.
 
 ## Statement programs
 
@@ -144,6 +172,28 @@ code says otherwise, or has no counterpart in the reference:
   `EvaluationError`, reason `integer_overflow`, never a wrapped or rounded
   number. (`modulo` cannot leave the range: the least `i64` modulo `-1` is
   `0`.)
+- **A cast whose answer is an integer outside `i64` is refused.** A string
+  or a float cast to `integer`, and a string cast to `duration` with a unit
+  past that range, fail with an `EvaluationError`, reason
+  `integer_overflow`; the reference's code answers an integer of any size
+  there.
+- **A string too large for a finite float casts to a refusal.** `::float`
+  on such a string fails with an `EvaluationError`, reason
+  `non_finite_number`; the reference's code raises there.
+- **An instant outside the years 0 to 9999 casts to no text.** `::string`
+  on such an instant (one date arithmetic can make) fails with an
+  `EvaluationError`, reason `date_out_of_range`, and `::datetime` on a date
+  outside those years is undefined, as the reference's instruction-set text
+  states that nothing outside them is an instant. The reference's code makes
+  the instant, raises when it writes one past 9999 or before -9999 as text,
+  and writes one between as text with a minus sign.
+- **`::date` reads a four-digit year only**, the calendar date the
+  reference's instruction-set text names; the reference's code also reads a
+  year with a minus sign (`-0005-01-01`).
+- **`::datetime` reads a space before the time**, as the reference's code
+  does, though the reference's instruction-set text names an ISO 8601
+  datetime, which separates them with a `T`. The tagged codec reads instants
+  the same way, so this crate has one instant reader.
 - **A float result that is not finite is refused.** `add`, `subtract`,
   `multiply` or `divide` whose float result overflows fails with an
   `EvaluationError`, reason `non_finite_number`; the reference's code raises

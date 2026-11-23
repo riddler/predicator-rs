@@ -6,8 +6,7 @@
 //! [`Error`] every entry point answers, and the [`tagged`] codec for the
 //! conformance corpus's tagged-value encoding.
 //!
-//! The evaluator runs every tier of the instruction set but casts (tier 7)
-//! and presence and overlap (tier 10) so far:
+//! The evaluator runs every tier of the instruction set:
 //! [`evaluate`] runs [`Instructions`] (read with
 //! [`Instructions::from_json`]) over a [`Context`] with the [`Options`]
 //! given per call, answering a [`Value`]. It runs `lit`, `load`, `compare`,
@@ -19,9 +18,9 @@
 //! which calls a function the [`Options`] pass in by name
 //! ([`Options::function`]) or one of the reference's library functions
 //! (the string, list, math, date and JSON functions); `store` and `pop`;
-//! `jump` and `pop_jump_if_falsy`; and `jump_backward`, each back edge
-//! spending one of the run's loop budget ([`Options::loop_budget`]). Every
-//! other opcode is refused as `unknown_instruction`, and the retired `and`
+//! `cast`; `jump` and `pop_jump_if_falsy`; `jump_backward`, each back edge
+//! spending one of the run's loop budget ([`Options::loop_budget`]); and
+//! `presence` and `intersects`. Every other opcode is refused as `unknown_instruction`, and the retired `and`
 //! and `or` as `retired_opcode`. The compiler is to come.
 //!
 //! [`execute`] and [`execute_value`] run the same instructions as a
