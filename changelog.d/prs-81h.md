@@ -10,4 +10,4 @@
   callable answering an `Option<DateTime>`; without one the run reads the
   system clock. A run reads the clock at most once, and only when the
   program reads the time; a clock that answers `None` fails the run with
-  the reason `clock_unavailable`.
+  the reason `clock_failed`.
