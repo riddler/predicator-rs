@@ -656,7 +656,7 @@ impl Descent<'_> {
 
     /// Folds the waiting operators `test` takes, the innermost first.
     fn fold_while(
-        &self,
+        &mut self,
         ops: &mut Vec<Op>,
         mut node: Node,
         test: impl Fn(&Op) -> bool,
@@ -668,15 +668,19 @@ impl Descent<'_> {
         Ok(node)
     }
 
-    /// One waiting operator over its right operand.
-    fn apply(&self, op: Op, operand: Node) -> Result<Node, Refusal> {
+    /// One waiting operator over its right operand. A prefix operator and
+    /// a relative date opened a level when they were read, and give it back
+    /// here.
+    fn apply(&mut self, op: Op, operand: Node) -> Result<Node, Refusal> {
         let (kind, position, span) = match op {
             Op::Not(position) => {
+                self.leave();
                 let span = between(position, operand.span.end);
                 let operand = Box::new(operand);
                 (Expression::Not { operand }, position, span)
             }
             Op::Unary(operator, position) => {
+                self.leave();
                 let span = between(position, operand.span.end);
                 let operand = Box::new(operand);
                 (Expression::Unary { operator, operand }, position, span)
@@ -685,7 +689,10 @@ impl Descent<'_> {
                 direction,
                 position,
                 start,
-            } => return self.relative_date(direction, position, start, operand),
+            } => {
+                self.leave();
+                return self.relative_date(direction, position, start, operand);
+            }
             Op::Binary {
                 operator,
                 left,
