@@ -29,11 +29,30 @@ pub struct Execution {
 impl Execution {
     /// The context the program left: the one it was given with every write
     /// it made. The context passed in is never changed.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Key, Options, Value, execute};
+    ///
+    /// let execution = execute("x = 1", &Context::new(), &Options::new())?;
+    /// let x = execution.context().get(&Key::from("x"));
+    /// assert_eq!(x, Some(&Value::from(1)));
+    /// # Ok::<(), predicator_rs::Error>(())
+    /// ```
     pub fn context(&self) -> &Context {
         &self.context
     }
 
     /// The context the program left, taken.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Key, Options, Value, execute};
+    ///
+    /// let execution = execute("x = 1", &Context::new(), &Options::new())?;
+    /// let mut context = execution.into_context();
+    /// context.insert("y", Value::from(2));
+    /// assert_eq!(context.get(&Key::from("x")), Some(&Value::from(1)));
+    /// # Ok::<(), predicator_rs::Error>(())
+    /// ```
     pub fn into_context(self) -> Context {
         self.context
     }
@@ -42,12 +61,32 @@ impl Execution {
     /// `pop` discarded, undefined when it popped nothing), when
     /// [`execute_value`](crate::execute_value) made the run; `None` when
     /// [`execute`](crate::execute) made it.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Options, Value, execute, execute_value};
+    ///
+    /// let options = Options::new();
+    /// let kept = execute_value("x = 1; x + 1", &Context::new(), &options)?;
+    /// assert_eq!(kept.value(), Some(&Value::from(2)));
+    /// let dropped = execute("x = 1; x + 1", &Context::new(), &options)?;
+    /// assert_eq!(dropped.value(), None);
+    /// # Ok::<(), predicator_rs::Error>(())
+    /// ```
     pub fn value(&self) -> Option<&Value> {
         self.value.as_ref()
     }
 
     /// The roots the program stored into, each once, in the order of its
     /// first store, whether or not the store changed the value there.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Key, Options, execute};
+    ///
+    /// let program = "b = 1; a = 2; b = 3";
+    /// let execution = execute(program, &Context::new(), &Options::new())?;
+    /// assert_eq!(execution.stored_roots(), [Key::from("b"), Key::from("a")]);
+    /// # Ok::<(), predicator_rs::Error>(())
+    /// ```
     pub fn stored_roots(&self) -> &[Key] {
         &self.stored_roots
     }
@@ -83,27 +122,67 @@ pub struct Stopped {
 
 impl Stopped {
     /// The error the run stopped on.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Options, execute};
+    ///
+    /// let stopped = execute("x = 1 / 0", &Context::new(), &Options::new()).unwrap_err();
+    /// assert_eq!(stopped.error().reason(), "division_by_zero");
+    /// ```
     pub fn error(&self) -> &Error {
         &self.error
     }
 
     /// The error the run stopped on, taken.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Options, execute};
+    ///
+    /// let stopped = execute("x = 1 / 0", &Context::new(), &Options::new()).unwrap_err();
+    /// assert_eq!(stopped.into_error().type_name(), "EvaluationError");
+    /// ```
     pub fn into_error(self) -> Error {
         *self.error
     }
 
     /// The context as of the last statement the run completed.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Key, Options, Value, execute};
+    ///
+    /// let program = "x = 1; y = 1 / 0";
+    /// let stopped = execute(program, &Context::new(), &Options::new()).unwrap_err();
+    /// assert_eq!(stopped.context().get(&Key::from("x")), Some(&Value::from(1)));
+    /// assert_eq!(stopped.context().get(&Key::from("y")), None);
+    /// ```
     pub fn context(&self) -> &Context {
         &self.context
     }
 
     /// The context as of the last statement the run completed, taken.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Key, Options, Value, execute};
+    ///
+    /// let program = "x = 1; y = 1 / 0";
+    /// let stopped = execute(program, &Context::new(), &Options::new()).unwrap_err();
+    /// let context = stopped.into_context();
+    /// assert_eq!(context.get(&Key::from("x")), Some(&Value::from(1)));
+    /// ```
     pub fn into_context(self) -> Context {
         self.context
     }
 
     /// The roots the run stored into before it stopped, each once, in the
     /// order of its first store.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Key, Options, execute};
+    ///
+    /// let program = "x = 1; y = 1 / 0";
+    /// let stopped = execute(program, &Context::new(), &Options::new()).unwrap_err();
+    /// assert_eq!(stopped.stored_roots(), [Key::from("x")]);
+    /// ```
     pub fn stored_roots(&self) -> &[Key] {
         &self.stored_roots
     }

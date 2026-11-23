@@ -124,12 +124,28 @@ impl Default for Options<'_> {
 
 impl<'a> Options<'a> {
     /// The default options.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Options, Value, evaluate};
+    ///
+    /// assert_eq!(evaluate("1 + 1", &Context::new(), &Options::new()), Ok(Value::from(2)));
+    /// ```
     pub fn new() -> Options<'a> {
         Options::default()
     }
 
     /// The same options with `policy` as what a load of an unbound
     /// variable does.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, OnUnbound, Options, Value, evaluate};
+    ///
+    /// let lenient = Options::new();
+    /// assert_eq!(evaluate("x is defined", &Context::new(), &lenient), Ok(Value::from(false)));
+    /// let strict = Options::new().on_unbound(OnUnbound::Error);
+    /// let refused = evaluate("x is defined", &Context::new(), &strict).unwrap_err();
+    /// assert_eq!(refused.reason(), "unbound_variable");
+    /// ```
     #[must_use]
     pub fn on_unbound(mut self, policy: OnUnbound) -> Options<'a> {
         self.on_unbound = policy;
@@ -140,6 +156,17 @@ impl<'a> Options<'a> {
     /// time from, in place of the system clock. A clock that answers `None`
     /// fails the run with the reason `clock_failed`; a panic inside it is
     /// not caught.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, DateTime, Options, Value, evaluate};
+    ///
+    /// let epoch = Options::new().clock(|| DateTime::from_unix(0, 0));
+    /// let year = evaluate("Date.year(Date.now())", &Context::new(), &epoch);
+    /// assert_eq!(year, Ok(Value::from(1970)));
+    /// let none = Options::new().clock(|| None);
+    /// let refused = evaluate("Date.now()", &Context::new(), &none).unwrap_err();
+    /// assert_eq!(refused.reason(), "clock_failed");
+    /// ```
     #[must_use]
     pub fn clock(mut self, clock: impl Fn() -> Option<DateTime> + Send + Sync + 'a) -> Options<'a> {
         self.clock = Some(Box::new(clock));

@@ -40,6 +40,14 @@ macro_rules! error_type {
         impl $name {
             /// An error with a reason (the corpus's token) and a message (a
             /// sentence for a person), at no position.
+            ///
+            /// ```
+            #[doc = concat!("use predicator_rs::{", stringify!($name), ", Position};")]
+            ///
+            #[doc = concat!("let error = ", stringify!($name), "::new(\"some_reason\", \"a sentence\");")]
+            /// assert_eq!(error.reason(), "some_reason");
+            /// assert_eq!(error.position(), None);
+            /// ```
             pub fn new(reason: impl Into<String>, message: impl Into<String>) -> Self {
                 Self {
                     reason: reason.into(),
@@ -50,6 +58,14 @@ macro_rules! error_type {
             }
 
             /// The same error at `position`.
+            ///
+            /// ```
+            #[doc = concat!("use predicator_rs::{", stringify!($name), ", Position};")]
+            ///
+            #[doc = concat!("let error = ", stringify!($name), "::new(\"some_reason\", \"a sentence\");")]
+            /// let at = Position { line: 2, column: 3 };
+            /// assert_eq!(error.with_position(at).position(), Some(at));
+            /// ```
             #[must_use]
             pub fn with_position(mut self, position: Position) -> Self {
                 self.position = Some(position);
@@ -58,16 +74,40 @@ macro_rules! error_type {
 
             /// The reason: the structured token the corpus names, which is
             /// normative.
+            ///
+            /// ```
+            #[doc = concat!("use predicator_rs::{", stringify!($name), ", Position};")]
+            ///
+            #[doc = concat!("let error = ", stringify!($name), "::new(\"some_reason\", \"a sentence\");")]
+            /// assert_eq!(error.reason(), "some_reason");
+            /// ```
             pub fn reason(&self) -> &str {
                 &self.reason
             }
 
             /// The message: a sentence for a person, which is not normative.
+            ///
+            /// ```
+            #[doc = concat!("use predicator_rs::{", stringify!($name), ", Position};")]
+            ///
+            #[doc = concat!("let error = ", stringify!($name), "::new(\"some_reason\", \"a sentence\");")]
+            /// assert_eq!(error.message(), "a sentence");
+            /// assert_eq!(error.to_string(), "a sentence");
+            /// ```
             pub fn message(&self) -> &str {
                 &self.message
             }
 
             /// Where in the source the failure is, when that is known.
+            ///
+            /// ```
+            #[doc = concat!("use predicator_rs::{", stringify!($name), ", Position};")]
+            ///
+            #[doc = concat!("let error = ", stringify!($name), "::new(\"some_reason\", \"a sentence\");")]
+            /// assert_eq!(error.position(), None);
+            /// let at = Position { line: 1, column: 1 };
+            /// assert_eq!(error.with_position(at).position(), Some(at));
+            /// ```
             pub fn position(&self) -> Option<Position> {
                 self.position
             }
@@ -197,6 +237,12 @@ impl Error {
     /// The error's type as the corpus spells it: `"ParseError"`,
     /// `"EvaluationError"`, `"TypeMismatchError"` or
     /// `"UndefinedVariableError"`.
+    ///
+    /// ```
+    /// use predicator_rs::compile;
+    ///
+    /// assert_eq!(compile("x >").unwrap_err().type_name(), "ParseError");
+    /// ```
     pub fn type_name(&self) -> &'static str {
         match self {
             Error::Parse(_) => "ParseError",
@@ -208,6 +254,13 @@ impl Error {
 
     /// The reason: the structured token the corpus names, which is
     /// normative.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Options, evaluate};
+    ///
+    /// let refused = evaluate("1 / 0", &Context::new(), &Options::new());
+    /// assert_eq!(refused.unwrap_err().reason(), "division_by_zero");
+    /// ```
     pub fn reason(&self) -> &str {
         match self {
             Error::Parse(error) => error.reason(),
@@ -218,6 +271,14 @@ impl Error {
     }
 
     /// The message: a sentence for a person, which is not normative.
+    ///
+    /// ```
+    /// use predicator_rs::{Error, TypeMismatchError};
+    ///
+    /// let error = Error::from(TypeMismatchError::new("add", "add takes numbers"));
+    /// assert_eq!(error.message(), "add takes numbers");
+    /// assert_eq!(error.to_string(), "add takes numbers");
+    /// ```
     pub fn message(&self) -> &str {
         match self {
             Error::Parse(error) => error.message(),
@@ -228,6 +289,15 @@ impl Error {
     }
 
     /// Where in the source the failure is, when that is known.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Options, Position, compile, evaluate};
+    ///
+    /// let parse = compile("x >").unwrap_err();
+    /// assert_eq!(parse.position(), Some(Position { line: 1, column: 4 }));
+    /// let run = evaluate("1 / 0", &Context::new(), &Options::new()).unwrap_err();
+    /// assert_eq!(run.position(), None);
+    /// ```
     pub fn position(&self) -> Option<Position> {
         match self {
             Error::Parse(error) => error.position(),

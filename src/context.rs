@@ -27,11 +27,25 @@ pub struct Context {
 
 impl Context {
     /// An empty context.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Key};
+    ///
+    /// assert_eq!(Context::new().get(&Key::from("x")), None);
+    /// ```
     pub fn new() -> Context {
         Context::default()
     }
 
     /// Binds `name` to `value`, answering the value it replaces.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Value};
+    ///
+    /// let mut context = Context::new();
+    /// assert_eq!(context.insert("x", Value::from(1)), None);
+    /// assert_eq!(context.insert("x", Value::from(2)), Some(Value::from(1)));
+    /// ```
     pub fn insert(&mut self, name: impl Into<Key>, value: Value) -> Option<Value> {
         self.bindings.insert(name, value)
     }
