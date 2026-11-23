@@ -24,16 +24,17 @@ pub struct Position {
 }
 
 /// Declares one of the four error types: a reason, a message and an optional
-/// position, with the same methods on each.
+/// position, with the same methods on each, and any further optional fields
+/// one type alone carries (each `None` until that type's own method sets it).
 macro_rules! error_type {
-    ($(#[$doc:meta])* $name:ident, $variant:ident) => {
+    ($(#[$doc:meta])* $name:ident, $variant:ident $(, $field:ident: $type:ty)*) => {
         $(#[$doc])*
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub struct $name {
             reason: String,
             message: String,
             position: Option<Position>,
-            root: Option<String>,
+            $($field: Option<$type>,)*
         }
 
         impl $name {
@@ -44,7 +45,7 @@ macro_rules! error_type {
                     reason: reason.into(),
                     message: message.into(),
                     position: None,
-                    root: None,
+                    $($field: None,)*
                 }
             }
 
@@ -116,7 +117,7 @@ error_type! {
     /// assert_eq!(error.to_string(), "the divisor is zero");
     /// assert_eq!(error.position(), None);
     /// ```
-    EvaluationError, Evaluation
+    EvaluationError, Evaluation, root: String
 }
 
 impl EvaluationError {

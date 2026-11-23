@@ -24,6 +24,8 @@ refuses every other opcode as `unknown_instruction` (the retired `and` and
 reads as undefined, and the evaluation fails with an `UndefinedVariableError`
 when undefined is its answer or an instruction refuses it; with
 `Options::new().on_unbound(OnUnbound::Error)` the load itself fails.
+`ISA_VERSION` is the version of the reference's instruction set the crate
+runs, the one the vendored corpus names.
 
 ## Compiling
 
@@ -72,7 +74,7 @@ is out of scope until the crate has a function for it.
 `Option<DateTime>`), or from the system clock when they name none. A run
 reads the clock at most once, the first time the program reads the time, and
 never when it does not; a clock that answers `None` fails the run with an
-`EvaluationError`, reason `clock_unavailable`.
+`EvaluationError`, reason `clock_failed`.
 
 `call` runs the reference's function library: `len`, `upper`, `lower`,
 `trim`, `starts_with`, `ends_with`, `substring`, `index_of` and `concat`;
@@ -106,7 +108,10 @@ are given to. `Math.random` draws from the source `Options::random` names, a
 callable answering 64 random bits; without one it draws from a source seeded
 from the standard library's per-process hash keys, which needs no
 dependency and is not cryptographic. `Date.now` reads the run's clock, as
-`relative_date` does.
+`relative_date` does. A function passed in (a host function, the clock, the
+random source) may borrow from the caller for the length of the call; a
+panic inside one is not caught, and unwinds out of the entry point to the
+caller.
 
 ## Casts, presence and overlap
 
@@ -121,7 +126,13 @@ an ISO 8601 datetime (a `T` before the time, a fraction after a full stop
 or a comma, read to the microsecond, and an offset of `Z`,
 `+HH:MM`, `+HHMM` or `+HH`, either sign), and a duration as the
 duration-literal grammar, fractions included (`"1.5s"` is a second and 500
-milliseconds). A float is written as the reference writes one (`1.0e16`,
+milliseconds); `parse_duration` reads that grammar outside a run, answering
+the `Duration` or an `EvaluationError`, reason `invalid_duration_format`.
+A units map, a map carrying `years`, `months`, `weeks`, `days`, `hours`,
+`minutes` and `seconds` under their string names with every unit it holds
+an integer (`milliseconds` too, when it holds one), is a duration to a
+cast: it passes through `::duration` unchanged, still a map, and
+`::string` writes it in the duration-literal grammar. A float is written as the reference writes one (`1.0e16`,
 `0.0001`), and an instant in UTC with its fraction left out when it is zero
 and six digits when it is not.
 
@@ -209,7 +220,7 @@ code says otherwise, or has no counterpart in the reference:
   have no bound (ruled by the operator, 2026-11-20). The tagged codec refuses
   an integer outside that range with the reason `integer_out_of_range`,
   rather than reading it as a float, and so does the lexer an integer
-  literal in a source (a `ParseError` spanning the literal), where the
+  literal in a source (a `ParseError` at the literal), where the
   reference's code reads an integer of any size. Every integer step is
   checked: `add`, `subtract`, `multiply` or `divide` on two integers whose
   result is outside
@@ -243,7 +254,7 @@ code says otherwise, or has no counterpart in the reference:
   (`2026-08-09 10:00:00Z`), and this crate's tagged codec still does.
 - **A decimal literal too large for a finite float is refused.** The
   lexer refuses such a literal in a source with a `ParseError`, reason
-  `non_finite_number`, spanning the literal; the reference's code raises
+  `non_finite_number`, at the literal; the reference's code raises
   there.
 - **A source nests 400 levels at most** (ruled by the operator,
   2026-11-20). The parser refuses a source that nests deeper with a
@@ -282,16 +293,21 @@ code says otherwise, or has no counterpart in the reference:
   a date at any year.
 - **Two maps, or two durations, have no order.** `compare` under `GT`, `LT`,
   `GTE` or `LTE` answers undefined for two maps or two durations, and for a
-  pair of list members that are two maps, two durations or two of the
-  map-like values of different kinds (a map, a duration, a date or an
-  instant, a date before an instant excepted). The reference's instruction-set
+  pair of list members that are two unequal maps, two unequal durations or
+  two of the map-like values of different kinds (a map, a duration, a date
+  or an instant, a date before an instant excepted); two equal members are
+  level, and the walk steps on. Giving a map member against a date, an
+  instant or a duration member no order is this crate's choice: the
+  reference's term order orders that pair by the size of its runtime's
+  structures. The reference's instruction-set
   text leaves the order of two maps unspecified for an implementation other
   than its own; its code orders them by its runtime's term order. Equality
   (`EQ`, `NE`, `STRICT_EQ`, `STRICT_NE`) on maps and durations is defined.
 - **A duration and a map are different types to `compare`**, so `EQ`, `NE`
   and the ordering operators answer undefined for that pair, as for any pair
   of different types. The reference's code holds a duration as a map and
-  answers `false` for `EQ`.
+  answers `false` for `EQ` for a duration an instruction makes; a duration
+  the host supplies is a map there, equal to a map of the same units.
 - **An instruction list read from JSON must be a list.**
   `Instructions::from_json` refuses any other JSON value with a
   `ParseError`, reason `not_an_instruction_list`; the reference's evaluator
@@ -309,23 +325,41 @@ code says otherwise, or has no counterpart in the reference:
   duration, and `add` and `subtract` move a date by any duration; the
   reference's code reads a unit only from a duration the host supplied, and
   moves a date only by one a literal or an instruction made.
-- **`relative_date` takes a duration and moves by all of it.** It moves the
-  current time by any duration exactly as `add` and `subtract` move an
-  instant, and a value on the stack that is not a duration (a map included)
-  fails with an `EvaluationError`, reason `invalid_stack_value`, as the
-  reference's instruction-set text states it. The reference's code takes any
-  map there, and moves by nothing for a duration the host supplied.
+- **`relative_date` takes a duration or a plain map, and moves by all of
+  it.** It moves the current time by any duration exactly as `add` and
+  `subtract` move an instant. A plain map is read as the duration its unit
+  names spell (`years` through `milliseconds`, as strings): a unit it leaves
+  out is 0 and a key that names no unit is passed over, as the reference's
+  instruction-set text makes a duration the map of its units. A map holding
+  a unit that is not an integer, a date, an instant and any other value fail
+  with an `EvaluationError`, reason `invalid_stack_value`. The reference's
+  code takes any map there, and moves by nothing for a duration the host
+  supplied.
 - **The clock is passed per call and read once per run.** The reference's
   code reads the system clock at each `relative_date`; here the clock is the
   one `Options` names (the system clock by default), read the first time a
   run reads the time, and every later read in that run sees the same
   instant. A clock with no time to give fails the run with the reason
-  `clock_unavailable`, which the reference has no counterpart for.
-- **`object_set` writes into a map and nothing else.** A date, an instant or
-  a duration beneath the value fails with an `EvaluationError`, reason
-  `invalid_stack_value`, as the reference's instruction-set text states it
-  for any target that is not a map. The reference's code holds those three
-  as maps and writes the key into them.
+  `clock_failed`, which the reference has no counterpart for.
+- **`object_set` writes into a map or a duration.** A duration beneath the
+  value is the plain map of its eight units, as the reference's
+  instruction-set text makes it, so the answer is that map with the key
+  written; a unit name is a key like any other, so writing `days` replaces
+  the unit's value. A date or an instant beneath the value fails with an
+  `EvaluationError`, reason `invalid_stack_value`, as that text states it
+  for a target that is not a map. The reference's code holds a date and an
+  instant as maps and writes the key into them, and keeps a duration's own
+  unit beside a written string key of the same name.
+- **A units map casts as a duration.** A map carrying the seven units
+  `years` through `seconds` under their string names, each an integer (and
+  `milliseconds`, when it is there, an integer too), passes through
+  `::duration` unchanged and is written by `::string` in the
+  duration-literal grammar. The reference's code reads only its own
+  duration's units that way, which it keys by atoms, so a string-keyed map
+  from the context casts to undefined there. Where `object_set` has written
+  a unit's name, this crate writes the unit written (`days` set to 5 on
+  `3d` writes `5d`), and the reference writes its duration's own unit
+  (`3d`). A units map whose units are not all integers casts to undefined.
 - **A duration's text writes a negative unit with its sign** (`-3d`). The
   reference's instruction-set text leaves out only a zero unit; its code
   leaves out a negative one too.
@@ -407,9 +441,14 @@ code says otherwise, or has no counterpart in the reference:
   an interior slot that holds a scalar; the reference's code holds those
   two as maps and writes the key into them.
 - **A store through a duration writes into the plain map of its eight
-  units**, so the slot holds a map afterwards, whatever the key. The
-  reference's code writes the key into the duration's own map.
+  units**, so the slot holds a map afterwards, whatever the key, and a key
+  that is a unit's name replaces that unit. The reference's code writes the
+  key into the duration's own map, whose units are keyed by atoms, so a
+  written `days` there is a string key added beside the unit, which stays
+  as it was.
 - **A store makes a list at most 1,048,576 (2^20) items long.** An index
   past a list's end at or beyond that is refused with an `EvaluationError`,
   reason `list_too_long`; a list already longer may be written inside its
-  end. The reference pads to any index.
+  end. The bound is per list, not per run: a loop that stores padded lists
+  under many roots can still grow a run's memory until its loop budget is
+  spent. The reference pads to any index.
