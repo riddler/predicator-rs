@@ -22,10 +22,12 @@
 //! all, with no trimming: an integer as `-?[0-9]+`, a float as
 //! `-?[0-9]+(\.[0-9]+)?`, a boolean as exactly `true` or `false`, a date as
 //! `YYYY-MM-DD`, an instant as the text the tagged codec reads (a date, a
-//! time, an offset; [`DateTime::parse`]), and a duration as the
-//! duration-literal grammar ([`Duration::parse`]). A float is written as
-//! the reference writes one (`json::float_text`), an instant in UTC with
-//! the fraction left out when it is zero and six digits when it is not.
+//! time, an offset; [`DateTime::parse`]) with a `T` before the time, as the
+//! reference's text names an ISO 8601 datetime ([`is_iso_datetime`]), and a
+//! duration as the duration-literal grammar ([`Duration::parse`]). A float
+//! is written as the reference writes one (`json::float_text`), an instant
+//! in UTC with the fraction left out when it is zero and six digits when it
+//! is not.
 //!
 //! Where the answer is a value this crate cannot hold, or one the reference
 //! raises on, the cast fails the run; [`refusal`] is the one place each
@@ -155,13 +157,15 @@ fn read(text: &str, target: Target) -> Result<Value, Refused> {
             _ => Value::Undefined,
         },
         Target::Date => Date::parse(text).map_or(Value::Undefined, Value::Date),
-        Target::DateTime => DateTime::parse(text).map_or(Value::Undefined, Value::DateTime),
+        Target::DateTime if is_iso_datetime(text) => {
+            DateTime::parse(text).map_or(Value::Undefined, Value::DateTime)
+        }
         Target::Duration => match Duration::parse(text) {
             Ok(duration) => Value::Duration(duration),
             Err(DurationText::Malformed) => Value::Undefined,
             Err(DurationText::Overflow) => return Err(Refused::IntegerOverflow),
         },
-        Target::Integer | Target::Float | Target::String => Value::Undefined,
+        Target::Integer | Target::Float | Target::String | Target::DateTime => Value::Undefined,
     })
 }
 
@@ -176,6 +180,14 @@ fn is_decimal(text: &str, fraction: bool) -> bool {
     };
     let digits = |run: &str| !run.is_empty() && run.bytes().all(|byte| byte.is_ascii_digit());
     digits(whole) && digits(part)
+}
+
+/// Whether `text` separates its date from its time with a `T`, as an ISO
+/// 8601 datetime does. The tagged codec's reader, which a cast shares, also
+/// takes a space there, as the reference's code does; a cast follows the
+/// reference's text and does not.
+fn is_iso_datetime(text: &str) -> bool {
+    text.as_bytes().get(10) == Some(&b'T')
 }
 
 /// A float truncated toward zero, when the integer fits in `i64`.
@@ -352,7 +364,7 @@ mod tests {
         );
     }
 
-    // Sabotage: with the cast reading only an instant written with Z, this
+    // Sabotage: with is_iso_datetime also taking a space at byte 10, this
     // test fails.
     #[test]
     fn a_string_is_read_as_a_date_or_an_instant_in_the_reference_forms() {
@@ -362,7 +374,6 @@ mod tests {
         };
         assert_eq!(instant("2026-08-09T10:00:00+05"), "2026-08-09T05:00:00Z");
         assert_eq!(instant("2026-08-09T10:00:00+0530"), "2026-08-09T04:30:00Z");
-        assert_eq!(instant("2026-08-09 10:00:00Z"), "2026-08-09T10:00:00Z");
         assert_eq!(
             instant("2026-08-09T10:00:00,5Z"),
             "2026-08-09T10:00:00.500000Z"
@@ -379,6 +390,8 @@ mod tests {
             "2026-08-09T24:00:00Z",
             "20260809T100000Z",
             "-0005-08-09T10:00:00Z",
+            "+2026-08-09T10:00:00Z",
+            "2026-08-09 10:00:00Z",
         ] {
             assert_eq!(instant(refused), "Undefined", "{refused}");
         }
@@ -389,6 +402,7 @@ mod tests {
         for refused in [
             "2026-02-29",
             "-0005-01-01",
+            "+2026-08-09",
             "10000-01-01",
             "20260809",
             "2026-8-9",
