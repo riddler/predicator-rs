@@ -8,12 +8,14 @@
 //! refused by its name alone. An opcode a later tier adds is a row added to
 //! the table and an arm added to [`Machine::step`].
 //!
-//! The arithmetic instructions live in `arithmetic`, and reading into a
-//! value (`access`, `bracket_access`) and the containment `in` and
-//! `contains` share in `access`.
+//! The arithmetic instructions live in `arithmetic`, reading into a value
+//! (`access`, `bracket_access`) and the containment `in` and `contains`
+//! share in `access`, and the rich types (`object_new`, `object_set`,
+//! `duration`, `relative_date`) in `rich`.
 
 mod access;
 mod arithmetic;
+mod rich;
 
 use crate::compare::{self, Operator};
 use crate::options::OnUnbound;
@@ -63,6 +65,10 @@ enum Op<'a> {
     In,
     Contains,
     MakeList(usize),
+    ObjectNew,
+    ObjectSet(&'a str),
+    Duration(&'a [Value]),
+    RelativeDate(&'a str),
 }
 
 /// One row of the dispatch table: an opcode's name and the reader of its
@@ -146,6 +152,22 @@ const OPCODES: &[Row] = &[
         name: "make_list",
         read: read_make_list,
     },
+    Row {
+        name: "object_new",
+        read: |operands| bare(operands, Op::ObjectNew),
+    },
+    Row {
+        name: "object_set",
+        read: |operands| string(operands).map(Op::ObjectSet),
+    },
+    Row {
+        name: "duration",
+        read: read_duration,
+    },
+    Row {
+        name: "relative_date",
+        read: |operands| string(operands).map(Op::RelativeDate),
+    },
 ];
 
 /// The opcodes the instruction set has retired, each with the version that
@@ -187,6 +209,23 @@ fn read_make_list(operands: &[Value]) -> Option<Op<'_>> {
 fn read_compare(operands: &[Value]) -> Option<Op<'_>> {
     match operands {
         [Value::String(name)] => Operator::named(name).map(Op::Compare),
+        _ => None,
+    }
+}
+
+/// `duration`'s operand: one list of unit pairs, each read when the
+/// instruction runs.
+fn read_duration(operands: &[Value]) -> Option<Op<'_>> {
+    match operands {
+        [Value::List(pairs)] => Some(Op::Duration(pairs)),
+        _ => None,
+    }
+}
+
+/// An opcode whose one operand is a string.
+fn string(operands: &[Value]) -> Option<&str> {
+    match operands {
+        [Value::String(text)] => Some(text),
         _ => None,
     }
 }
@@ -252,7 +291,10 @@ impl From<EvaluationError> for Fault {
 /// The machine's state over one run.
 struct Machine<'a> {
     context: &'a Context,
+    options: &'a Options<'a>,
     on_unbound: OnUnbound,
+    /// The current time, once this run has read the clock.
+    now: Option<crate::DateTime>,
     stack: Vec<Value>,
     /// The first root this run loaded and did not find bound.
     unbound: Option<&'a str>,
@@ -388,6 +430,21 @@ impl<'a> Machine<'a> {
                 let items = self.stack.split_off(at);
                 self.stack.push(Value::List(items));
             }
+            Op::ObjectNew => self.stack.push(Value::Map(crate::Map::new())),
+            Op::ObjectSet(key) => {
+                let (value, target) = self.pair("object_set")?;
+                self.stack.push(rich::object_set(target, key, value)?);
+            }
+            Op::Duration(pairs) => self.stack.push(Value::Duration(rich::duration(pairs)?)),
+            Op::RelativeDate(direction) => {
+                let top = self
+                    .stack
+                    .pop()
+                    .ok_or_else(|| insufficient("relative_date", 1))?;
+                let (duration, sign) = rich::relative(&top, direction)?;
+                let now = self.now()?;
+                self.stack.push(rich::shift(now, &duration, sign)?);
+            }
             Op::JumpIfFalsyOrPop(offset) => {
                 if !self.condition("jump_if_falsy_or_pop")? {
                     return Ok(at.saturating_add(offset));
@@ -410,6 +467,21 @@ impl<'a> Machine<'a> {
             return Err(insufficient(operation, 2).into());
         };
         Ok((top, beneath))
+    }
+
+    /// The current time: the clock read the first time a run asks, and the
+    /// same instant every later time. A clock with no time to give fails
+    /// the run with the reason `clock_unavailable`, the one refusal every
+    /// instruction that reads the time answers.
+    fn now(&mut self) -> Result<crate::DateTime, EvaluationError> {
+        if let Some(now) = self.now {
+            return Ok(now);
+        }
+        let now = self.options.now().ok_or_else(|| {
+            EvaluationError::new("clock_unavailable", "the clock gave no current time")
+        })?;
+        self.now = Some(now);
+        Ok(now)
     }
 
     /// Pushes the value bound to the root `name`, or undefined when it is
@@ -503,7 +575,9 @@ pub fn evaluate<P: Program>(
     context.check()?;
     let mut machine = Machine {
         context,
+        options,
         on_unbound: options.on_unbound,
+        now: None,
         stack: Vec::new(),
         unbound: None,
     };

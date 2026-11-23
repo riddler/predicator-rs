@@ -283,7 +283,7 @@ fn shift_date(date: Date, duration: &Duration, sign: i128) -> Result<Value, Eval
 /// `instant` moved by `duration`, forward when `sign` is 1 and back when it
 /// is -1: by every unit to the second, and by its milliseconds when they
 /// are positive, as the reference's duration code splits the two.
-fn shift_instant(
+pub(super) fn shift_instant(
     instant: DateTime,
     duration: &Duration,
     sign: i128,
