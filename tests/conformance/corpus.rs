@@ -187,6 +187,9 @@ pub struct Case {
     pub source: Option<String>,
     /// The compiled instruction list, its literal operands decoded.
     pub instructions: predicator_rs::Value,
+    /// The same list as the compact JSON text the evaluator surface reads
+    /// it from (`predicator_rs::Instructions::from_json`).
+    pub instructions_json: String,
     /// The variable bindings, decoded.
     pub context: predicator_rs::Value,
     /// The result or error the evaluator gives.
@@ -252,6 +255,7 @@ fn read_case(line: &str, file: &str, number: usize, shape: &CaseShape) -> Result
         source,
         instructions: case_value(item.get("instructions").unwrap_or(&Value::Null))
             .map_err(|error| wrong(&format!("instructions: {error}")))?,
+        instructions_json: item.get("instructions").unwrap_or(&Value::Null).to_string(),
         context: case_value(item.get("context").unwrap_or(&Value::Null))
             .map_err(|error| wrong(&format!("context: {error}")))?,
         expected,

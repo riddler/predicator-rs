@@ -195,7 +195,7 @@ impl PartialEq for Value {
 
 /// How an integer stands to a finite float, by number: exactly, with no
 /// rounding of the integer to a float.
-fn integer_against_float(integer: i64, float: f64) -> Option<Ordering> {
+pub(crate) fn integer_against_float(integer: i64, float: f64) -> Option<Ordering> {
     // 2^63, exactly representable as a float.
     const LIMIT: f64 = 9_223_372_036_854_775_808.0;
     if float.is_nan() {

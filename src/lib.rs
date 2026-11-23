@@ -4,8 +4,15 @@
 //! The crate holds its value model so far: [`Value`] and the types it is
 //! built from ([`Map`] and its [`Key`], [`Date`], [`DateTime`], [`Duration`]), the
 //! [`Error`] every entry point answers, and the [`tagged`] codec for the
-//! conformance corpus's tagged-value encoding. The compiler and the
-//! evaluator are to come.
+//! conformance corpus's tagged-value encoding.
+//!
+//! The evaluator runs the instruction set's first tier so far: [`evaluate`]
+//! runs [`Instructions`] (read with [`Instructions::from_json`]) over a
+//! [`Context`] with the [`Options`] given per call, answering a [`Value`].
+//! It runs `lit`, `load`, `compare`, `not`, `unary_bang`, `unary_minus`,
+//! `jump_if_falsy_or_pop` and `jump_if_true_or_pop`; every other opcode is
+//! refused as `unknown_instruction`, and the retired `and` and `or` as
+//! `retired_opcode`. The compiler is to come.
 //!
 //! With the `serde` feature (off by default), [`Value`] implements
 //! `Serialize` and `Deserialize` in the tagged encoding, and [`Date`],
@@ -17,19 +24,28 @@
 
 mod boundary;
 mod civil;
+mod compare;
+mod context;
 mod error;
+mod evaluator;
+mod instructions;
 mod json;
 mod map;
+mod options;
 #[cfg(feature = "serde")]
 mod serde_impl;
 pub mod tagged;
 mod value;
 
 pub use civil::{Date, DateTime, Duration};
+pub use context::Context;
 pub use error::{
     Error, EvaluationError, ParseError, Position, TypeMismatchError, UndefinedVariableError,
 };
+pub use evaluator::evaluate;
+pub use instructions::Instructions;
 pub use map::{Key, Map};
+pub use options::{OnUnbound, Options};
 pub use value::Value;
 
 #[cfg(test)]
