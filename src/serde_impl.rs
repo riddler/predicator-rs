@@ -73,7 +73,7 @@ impl Serialize for Checked<'_> {
                     let Key::String(key) = key else {
                         return Err(ser::Error::custom(text(json::non_string_key(key))));
                     };
-                    entries.serialize_entry(key, &Checked(item))?;
+                    entries.serialize_entry(key.as_str(), &Checked(item))?;
                 }
                 entries.end()
             }
