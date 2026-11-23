@@ -10,11 +10,13 @@
 //!
 //! The arithmetic instructions live in `arithmetic`, reading into a value
 //! (`access`, `bracket_access`) and the containment `in` and `contains`
-//! share in `access`, and the rich types (`object_new`, `object_set`,
-//! `duration`, `relative_date`) in `rich`.
+//! share in `access`, the rich types (`object_new`, `object_set`,
+//! `duration`, `relative_date`) in `rich`, and the function library `call`
+//! runs in `library`.
 
 mod access;
 mod arithmetic;
+mod library;
 mod rich;
 
 use crate::compare::{self, Operator};
@@ -24,6 +26,8 @@ use crate::{
     UndefinedVariableError, Value,
 };
 use arithmetic::Arithmetic;
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
 
 /// The program an entry point is given: what can be run as an instruction
 /// list. The trait is sealed; it is implemented for `&Instructions`.
@@ -69,6 +73,7 @@ enum Op<'a> {
     ObjectSet(&'a str),
     Duration(&'a [Value]),
     RelativeDate(&'a str),
+    Call(&'a str, usize),
 }
 
 /// One row of the dispatch table: an opcode's name and the reader of its
@@ -168,6 +173,10 @@ const OPCODES: &[Row] = &[
         name: "relative_date",
         read: |operands| string(operands).map(Op::RelativeDate),
     },
+    Row {
+        name: "call",
+        read: read_call,
+    },
 ];
 
 /// The opcodes the instruction set has retired, each with the version that
@@ -202,6 +211,19 @@ fn read_make_list(operands: &[Value]) -> Option<Op<'_>> {
         [Value::Integer(count)] if *count >= 0 => {
             Some(Op::MakeList(usize::try_from(*count).unwrap_or(usize::MAX)))
         }
+        _ => None,
+    }
+}
+
+/// `call`'s operands: the function's name and a non-negative argument
+/// count. A count past the address space asks for more values than any
+/// stack holds.
+fn read_call(operands: &[Value]) -> Option<Op<'_>> {
+    match operands {
+        [Value::String(name), Value::Integer(count)] if *count >= 0 => Some(Op::Call(
+            name,
+            usize::try_from(*count).unwrap_or(usize::MAX),
+        )),
         _ => None,
     }
 }
@@ -298,6 +320,9 @@ struct Machine<'a> {
     stack: Vec<Value>,
     /// The first root this run loaded and did not find bound.
     unbound: Option<&'a str>,
+    /// The default random source, once this run has drawn from it: hash
+    /// keys from the standard library and a count of draws.
+    random: Option<(RandomState, u64)>,
 }
 
 fn insufficient(operation: &str, wanted: usize) -> EvaluationError {
@@ -445,6 +470,20 @@ impl<'a> Machine<'a> {
                 let now = self.now()?;
                 self.stack.push(rich::shift(now, &duration, sign)?);
             }
+            Op::Call(name, count) => {
+                let depth = self.stack.len();
+                let at = depth.checked_sub(count).ok_or_else(|| {
+                    EvaluationError::new(
+                        "insufficient_arguments",
+                        format!(
+                            "Function {name}() expects {count} arguments, but only {depth} values on stack"
+                        ),
+                    )
+                })?;
+                let arguments = self.stack.split_off(at);
+                let answer = self.call(name, &arguments)?;
+                self.stack.push(answer);
+            }
             Op::JumpIfFalsyOrPop(offset) => {
                 if !self.condition("jump_if_falsy_or_pop")? {
                     return Ok(at.saturating_add(offset));
@@ -482,6 +521,30 @@ impl<'a> Machine<'a> {
         })?;
         self.now = Some(now);
         Ok(now)
+    }
+
+    /// Calls the function `name` with `arguments`: the host function the
+    /// options pass under that name, else the library function, else none
+    /// (`Unknown function: NAME`). A host function's answer is checked
+    /// against the value domain; a library function's arity is checked
+    /// before its body runs. Every refusal is an [`EvaluationError`].
+    fn call(&mut self, name: &str, arguments: &[Value]) -> Result<Value, EvaluationError> {
+        if let Some(function) = self.options.host_function(name) {
+            let answer = function(arguments).map_err(library::refused)?;
+            crate::boundary::check(&answer)?;
+            return Ok(answer);
+        }
+        let Some(function) = library::find(name) else {
+            return Err(library::refused(format!("Unknown function: {name}")));
+        };
+        if !function.arity.admits(arguments.len()) {
+            return Err(library::refused(format!(
+                "Function {name}() expects {} arguments, got {}",
+                function.arity.describe(),
+                arguments.len()
+            )));
+        }
+        (function.body)(arguments, self)
     }
 
     /// Pushes the value bound to the root `name`, or undefined when it is
@@ -523,6 +586,23 @@ impl<'a> Machine<'a> {
             Some(other) => Err(mismatch(operation, "boolean", other)),
             None => Err(insufficient(operation, 1).into()),
         }
+    }
+}
+
+impl library::Run for Machine<'_> {
+    fn now(&mut self) -> Result<crate::DateTime, EvaluationError> {
+        Machine::now(self)
+    }
+
+    /// A draw from the source the options name, or from the default: the
+    /// run's own hash keys over a count of its draws.
+    fn draw(&mut self) -> u64 {
+        if let Some(random) = self.options.random_source() {
+            return random();
+        }
+        let (keys, draws) = self.random.get_or_insert_with(|| (RandomState::new(), 0));
+        *draws = draws.wrapping_add(1);
+        keys.hash_one(*draws)
     }
 }
 
@@ -580,6 +660,7 @@ pub fn evaluate<P: Program>(
         now: None,
         stack: Vec::new(),
         unbound: None,
+        random: None,
     };
     let outcome = machine.run(&instructions.list);
     let unbound_error = |first: Option<&str>| first.map(|name| Error::from(unbound(name)));
@@ -909,6 +990,227 @@ mod tests {
         assert_eq!(
             run_with(r#"[["load","x"]]"#, &context, &options).unwrap(),
             Value::Undefined
+        );
+    }
+
+    /// The type, reason and message of the error `text` fails with under
+    /// `options`; an answer instead is reported in the same shape, so the
+    /// assertion names it.
+    fn failure(text: &str, options: &Options) -> (String, String, String) {
+        match run_with(text, &Context::new(), options) {
+            Ok(value) => ("no error".to_owned(), format!("{value:?}"), String::new()),
+            Err(error) => (
+                error.type_name().to_owned(),
+                error.reason().to_owned(),
+                error.message().to_owned(),
+            ),
+        }
+    }
+
+    fn function_error(message: &str) -> (String, String, String) {
+        (
+            "EvaluationError".to_owned(),
+            message.to_owned(),
+            message.to_owned(),
+        )
+    }
+
+    // Sabotage: with the call arm splitting off the arguments in stack order
+    // reversed, this test fails.
+    #[test]
+    fn call_passes_its_arguments_deepest_first_and_leaves_the_rest() {
+        assert_eq!(
+            run(r#"[["lit",0],["lit","hello world"],["lit",6],["lit",3],["call","substring",3]]"#)
+                .ok(),
+            Some(Value::from("wor"))
+        );
+        assert_eq!(
+            run(r#"[["lit",0],["lit","x"],["call","len",1],["make_list",2]]"#).unwrap(),
+            Value::from(vec![0.into(), 1.into()])
+        );
+        assert_eq!(
+            run(r#"[["call","Math.random",0],["lit",1],["compare","LT"]]"#).unwrap(),
+            Value::from(true)
+        );
+    }
+
+    // Sabotage: with the call arm skipping the stack-depth check (popping
+    // what there is), this test fails.
+    #[test]
+    fn call_refuses_too_few_values_an_unknown_name_and_a_wrong_arity() {
+        let options = Options::new();
+        assert_eq!(
+            failure(r#"[["lit",1],["call","Math.max",2]]"#, &options),
+            (
+                "EvaluationError".to_owned(),
+                "insufficient_arguments".to_owned(),
+                "Function Math.max() expects 2 arguments, but only 1 values on stack".to_owned()
+            )
+        );
+        assert_eq!(
+            failure(r#"[["call","nope",1]]"#, &options).1,
+            "insufficient_arguments"
+        );
+        assert_eq!(
+            failure(r#"[["lit",1],["call","nope",1]]"#, &options),
+            function_error("Unknown function: nope")
+        );
+        assert_eq!(
+            failure(r#"[["lit",1],["lit",2],["call","len",2]]"#, &options),
+            function_error("Function len() expects 1 arguments, got 2")
+        );
+        assert_eq!(
+            failure(r#"[["lit","a"],["call","substring",1]]"#, &options),
+            function_error("Function substring() expects 2 or 3 arguments, got 1")
+        );
+        assert_eq!(
+            failure(r#"[["lit",1],["call","Math.random",1]]"#, &options),
+            function_error("Function Math.random() expects 0 arguments, got 1")
+        );
+        for text in [
+            r#"[["call","len"]]"#,
+            r#"[["call","len",-1]]"#,
+            r#"[["call","len",1.0]]"#,
+            r#"[["call",1,1]]"#,
+            r#"[["call","len",1,1]]"#,
+        ] {
+            assert_eq!(refusal(text), evaluation("unknown_instruction"), "{text}");
+        }
+        assert_eq!(
+            refusal(r#"[["call","len",9223372036854775807]]"#),
+            evaluation("insufficient_arguments")
+        );
+    }
+
+    // Sabotage: with call looking up the library before the host's
+    // functions, this test fails.
+    #[test]
+    fn a_host_function_shadows_the_library_for_its_options_only() {
+        let seen = std::sync::Mutex::new(Vec::new());
+        let options = Options::new()
+            .function("len", |arguments| {
+                seen.lock().unwrap().push(arguments.to_vec());
+                Ok(Value::from(-1))
+            })
+            .function("twice", |arguments| match arguments {
+                [Value::Integer(x)] => Ok(Value::from(x * 2)),
+                _ => Err("twice takes one integer".to_owned()),
+            });
+        let program = r#"[["lit","abc"],["lit",true],["call","len",2]]"#;
+        assert_eq!(
+            run_with(program, &Context::new(), &options).ok(),
+            Some(Value::from(-1))
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![vec![Value::from("abc"), Value::from(true)]]
+        );
+        assert_eq!(
+            run(r#"[["lit","abc"],["call","len",1]]"#).unwrap(),
+            Value::from(3)
+        );
+        assert_eq!(
+            run_with(
+                r#"[["lit",21],["call","twice",1]]"#,
+                &Context::new(),
+                &options
+            )
+            .unwrap(),
+            Value::from(42)
+        );
+        assert_eq!(
+            failure(r#"[["lit","x"],["call","twice",1]]"#, &options),
+            function_error("twice takes one integer")
+        );
+        assert_eq!(
+            failure(r#"[["lit",1],["call","twice",1]]"#, &Options::new()),
+            function_error("Unknown function: twice")
+        );
+    }
+
+    // Sabotage: with call skipping the domain check of a host function's
+    // answer, this test fails.
+    #[test]
+    fn a_host_functions_answer_is_checked_against_the_value_domain() {
+        let options = Options::new()
+            .function("infinite", |_| Ok(Value::Float(f64::INFINITY)))
+            .function("deep", |_| {
+                let mut deep = Value::Null;
+                for _ in 0..101 {
+                    deep = Value::from(vec![deep]);
+                }
+                Ok(deep)
+            })
+            .function("nothing", |_| Ok(Value::Undefined));
+        assert_eq!(
+            failure(r#"[["call","infinite",0]]"#, &options).1,
+            "non_finite_number"
+        );
+        assert_eq!(
+            failure(r#"[["call","deep",0]]"#, &options).1,
+            "depth_limit_exceeded"
+        );
+        assert_eq!(
+            run_with(r#"[["call","nothing",0]]"#, &Context::new(), &options).unwrap(),
+            Value::Undefined
+        );
+    }
+
+    // Sabotage: with draw ignoring the options' random source, this test
+    // fails.
+    #[test]
+    fn math_random_draws_from_the_source_passed_per_call() {
+        let draws = std::sync::atomic::AtomicU64::new(0);
+        let options =
+            Options::new().random(|| draws.fetch_add(1, std::sync::atomic::Ordering::SeqCst) << 62);
+        let program = r#"[["call","Math.random",0],["call","Math.random",0],["make_list",2]]"#;
+        assert_eq!(
+            run_with(program, &Context::new(), &options).unwrap(),
+            Value::from(vec![0.0.into(), 0.25.into()])
+        );
+        // The default source draws differently each time, in [0, 1).
+        let drawn = run(program).unwrap();
+        let Value::List(drawn) = &drawn else {
+            panic!("a list")
+        };
+        assert_ne!(drawn[0], drawn[1]);
+        for value in drawn {
+            let Value::Float(number) = *value else {
+                panic!("a float")
+            };
+            assert!((0.0..1.0).contains(&number));
+        }
+    }
+
+    // Sabotage: with Date.now reading the options' clock at each call
+    // rather than once per run, this test fails.
+    #[test]
+    fn date_now_reads_the_runs_clock_once() {
+        let reads = std::sync::atomic::AtomicU32::new(0);
+        let options = Options::new().clock(|| {
+            let read = reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::DateTime::from_unix(i64::from(read) * 86_400, 0)
+        });
+        let program = r#"[["call","Date.now",0],["call","Date.now",0],["make_list",2]]"#;
+        let epoch = Value::from(crate::DateTime::from_unix(0, 0).unwrap());
+        assert_eq!(
+            run_with(program, &Context::new(), &options).unwrap(),
+            Value::from(vec![epoch.clone(), epoch])
+        );
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            failure(r#"[["call","Date.now",0]]"#, &Options::new().clock(|| None)).1,
+            "clock_unavailable"
+        );
+    }
+
+    // Sabotage: with call answering an unbound argument's refusal as an
+    // UndefinedVariableError, this test fails.
+    #[test]
+    fn a_function_refusing_an_unbound_argument_is_an_evaluation_error() {
+        assert_eq!(
+            failure(r#"[["load","missing"],["call","len",1]]"#, &Options::new()),
+            function_error("len() expects a string argument")
         );
     }
 

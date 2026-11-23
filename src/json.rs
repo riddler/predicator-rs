@@ -8,6 +8,7 @@
 
 use crate::boundary::DEPTH_LIMIT;
 use crate::{Key, Map, Value};
+use std::borrow::Cow;
 
 /// Why a text could not be read or a value written: a reason token and a
 /// sentence.
@@ -31,6 +32,22 @@ impl Refusal {
 pub(crate) struct Fault {
     pub(crate) refusal: Refusal,
     pub(crate) offset: usize,
+    /// Where in the grammar the reader stopped, for a reader of the
+    /// reference's own fault text ([`reference_fault`]).
+    pub(crate) shape: Shape,
+}
+
+/// Where in the grammar a fault was found, where that changes the byte the
+/// reference's reader names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Shape {
+    /// Anywhere the reference names the byte this reader stopped at.
+    Plain,
+    /// In the literal `true`, `false` or `null` that starts at `start` and
+    /// is `length` bytes long.
+    Literal { start: usize, length: usize },
+    /// After a whole value that ends at `end` and is followed by more text.
+    Trailing { end: usize },
 }
 
 /// A list or an object the reader is inside.
@@ -54,6 +71,7 @@ impl Reader<'_> {
         Fault {
             refusal: Refusal::new(reason, message),
             offset,
+            shape: Shape::Plain,
         }
     }
 
@@ -87,8 +105,15 @@ impl Reader<'_> {
     }
 
     fn literal(&mut self, word: &str, value: Value) -> Result<Value, Fault> {
+        let start = self.at;
         for expected in word.bytes() {
-            self.expect(expected)?;
+            self.expect(expected).map_err(|fault| Fault {
+                shape: Shape::Literal {
+                    start,
+                    length: word.len(),
+                },
+                ..fault
+            })?;
         }
         Ok(value)
     }
@@ -288,6 +313,7 @@ pub(crate) fn read(
                     finish(Map::new()).map_err(|refusal| Fault {
                         refusal,
                         offset: start,
+                        shape: Shape::Plain,
                     })?
                 } else {
                     let key = reader.key()?;
@@ -307,10 +333,16 @@ pub(crate) fn read(
             _ => return Err(reader.unexpected()),
         };
         loop {
+            let end = reader.at;
             reader.skip_whitespace();
             match frames.pop() {
                 None if reader.peek().is_none() => return Ok(value),
-                None => return Err(reader.unexpected()),
+                None => {
+                    return Err(Fault {
+                        shape: Shape::Trailing { end },
+                        ..reader.unexpected()
+                    });
+                }
                 Some(Frame::List(mut items)) => {
                     items.push(value);
                     match reader.peek() {
@@ -348,6 +380,7 @@ pub(crate) fn read(
                             value = finish(map).map_err(|refusal| Fault {
                                 refusal,
                                 offset: start,
+                                shape: Shape::Plain,
                             })?;
                         }
                         _ => return Err(reader.unexpected()),
@@ -355,6 +388,37 @@ pub(crate) fn read(
                 }
             }
         }
+    }
+}
+
+/// The reference's own text for `fault`, a fault of the plain JSON `text`,
+/// where its reader names a byte or the end of the text: the byte at the
+/// offset the reference names (`unexpected byte 0x6F at position 1`), or
+/// the end, which it places at the text's length (`unexpected end of input
+/// at position 3`). Two places differ from where this reader stops: a
+/// literal that does not match is named at its second byte, or at the end
+/// when the text is too short to hold it, whichever byte broke the match;
+/// and text after a whole value is named at the first byte after the
+/// value, whitespace included. Any other fault (an integer outside `i64`, a
+/// float that is not finite, a malformed `\u` escape, a text nested past the
+/// depth limit) keeps this reader's own text, the reference's reader having
+/// no counterpart this crate can give.
+pub(crate) fn reference_fault(text: &str, fault: &Fault) -> String {
+    let bytes = text.as_bytes();
+    let at = |offset: usize| match bytes.get(offset) {
+        Some(byte) => format!("unexpected byte 0x{byte:02X} at position {offset}"),
+        None => format!("unexpected end of input at position {}", bytes.len()),
+    };
+    match fault.shape {
+        Shape::Literal { start, length } if bytes.len() <= start.saturating_add(length) => {
+            at(bytes.len())
+        }
+        Shape::Literal { start, .. } => at(start.saturating_add(1)),
+        Shape::Trailing { end } => at(end),
+        Shape::Plain if fault.offset >= bytes.len() && fault.refusal.reason == "malformed_json" => {
+            at(bytes.len())
+        }
+        Shape::Plain => fault.refusal.message.clone(),
     }
 }
 
@@ -366,6 +430,18 @@ pub(crate) trait Extension {
 
     /// Refuses a map that cannot be written.
     fn check_map(&self, map: &Map) -> Result<(), Refusal>;
+
+    /// The entries of `map` as they are written, in order, each key as its
+    /// text: by default each key in the map's own order, a key that is not a
+    /// string refused.
+    fn entries<'m>(&self, map: &'m Map) -> Result<Vec<(Cow<'m, str>, &'m Value)>, Refusal> {
+        map.iter()
+            .map(|(key, value)| match key {
+                Key::String(text) => Ok((Cow::Borrowed(text.as_str()), value)),
+                _ => Err(non_string_key(key)),
+            })
+            .collect()
+    }
 }
 
 /// The refusal of a list, map or tag at a depth past the limit.
@@ -517,7 +593,7 @@ pub(crate) fn non_string_key(key: &Key) -> Refusal {
 enum Task<'a> {
     Value(&'a Value, usize),
     Text(&'static str),
-    Key(&'a str),
+    Key(Cow<'a, str>),
 }
 
 /// Writes `value` as JSON text with no whitespace and the keys of each map
@@ -530,7 +606,7 @@ pub(crate) fn write(value: &Value, extension: &dyn Extension) -> Result<String, 
         match task {
             Task::Text(text) => out.push_str(text),
             Task::Key(key) => {
-                write_string(key, &mut out);
+                write_string(&key, &mut out);
                 out.push(':');
             }
             Task::Value(value, depth) => match value {
@@ -562,11 +638,9 @@ pub(crate) fn write(value: &Value, extension: &dyn Extension) -> Result<String, 
                     extension.check_map(map)?;
                     out.push('{');
                     work.push(Task::Text("}"));
-                    for (index, (key, item)) in map.entries.iter().enumerate().rev() {
-                        let key = match key {
-                            Key::String(key) => key.as_str(),
-                            _ => return Err(non_string_key(key)),
-                        };
+                    for (index, (key, item)) in
+                        extension.entries(map)?.into_iter().enumerate().rev()
+                    {
                         work.push(Task::Value(item, depth + 1));
                         work.push(Task::Key(key));
                         if index > 0 {

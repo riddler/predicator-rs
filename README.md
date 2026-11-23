@@ -7,17 +7,15 @@ small instruction set and evaluate it on a stack machine, with the same
 answers as the reference implementation on its shared conformance corpus.
 
 The published 0.0.0 is a placeholder that reserves the crate name; the first
-usable version is 0.1.0. What the source holds so far is the value model
-(`Value` and its types), the errors, the codec for the conformance corpus's
-tagged-value encoding (`tagged`), and the evaluator's first tier:
+usable version is 0.1.0. What the source holds so far is the value model(`Value` and its types), the errors, the codec for the conformance corpus's
+tagged-value encoding (`tagged`), and the evaluator:
 `evaluate` runs an instruction list (`Instructions`, read from JSON in the
 tagged encoding) over a `Context`, with `Options` passed per call. It runs
-the instruction set's first four tiers: `lit`, `load`, `compare`, `not`,
+the instruction set's first five tiers: `lit`, `load`, `compare`, `not`,
 `unary_bang`, `unary_minus`, `jump_if_falsy_or_pop` and
 `jump_if_true_or_pop`; the arithmetic `add`, `subtract`, `multiply`,
-`divide` and `modulo`; `access`, `bracket_access`, `in`, `contains` and
-`make_list`; and `object_new`, `object_set`, `duration` and
-`relative_date`. It refuses every other opcode as `unknown_instruction` until a
+`divide` and `modulo`; `access`, `bracket_access`, `in`, `contains` and`make_list`; `object_new`, `object_set`, `duration` and
+`relative_date`; and `call`. It refuses every other opcode as `unknown_instruction` until a
 later version adds it (the retired `and` and `or` as `retired_opcode`). A variable the context does not bind
 reads as undefined, and the evaluation fails with an `UndefinedVariableError`
 when undefined is its answer or an instruction refuses it; with
@@ -26,9 +24,42 @@ when undefined is its answer or an instruction refuses it; with
 `relative_date` reads the current time from the clock the options name
 (`Options::new().clock(|| ...)`, a callable answering an
 `Option<DateTime>`), or from the system clock when they name none. A run
-reads the clock at most once, the first time the program reads the time, and
-never when it does not; a clock that answers `None` fails the run with an
+reads the clock at most once, the first time the program reads the time, andnever when it does not; a clock that answers `None` fails the run with an
 `EvaluationError`, reason `clock_unavailable`.
+
+`call` runs the reference's function library: `len`, `upper`, `lower`,
+`trim`, `starts_with`, `ends_with`, `substring`, `index_of` and `concat`;
+`Math.pow`, `Math.sqrt`, `Math.abs`, `Math.floor`, `Math.ceil`,
+`Math.round`, `Math.min`, `Math.max` and `Math.random`; `Date.year`,
+`Date.month`, `Date.day` and `Date.now`; and `JSON.stringify` and
+`JSON.parse`. A function that refuses its arguments, an unknown name and a
+wrong argument count fail the run with an `EvaluationError` whose reason is
+the reference's own message (`Unknown function: x`). A host passes a function
+of its own per call, by name:
+
+```rust
+use predicator_rs::{Context, Error, Instructions, Options, Value, evaluate};
+
+fn main() -> Result<(), Error> {
+    let options = Options::new().function("double", |arguments| match arguments {
+        [Value::Integer(x)] => x.checked_mul(2).map(Value::from).ok_or_else(|| "too large".to_owned()),
+        _ => Err("double takes one integer".to_owned()),
+    });
+    let program = Instructions::from_json(r#"[["lit",21],["call","double",1]]"#)?;
+    assert_eq!(evaluate(&program, &Context::new(), &options)?, Value::from(42));
+    Ok(())
+}
+```
+
+The function takes the call's arguments and nothing else. An `Err` fails
+the run with an `EvaluationError` whose reason and message are the text it
+gives; an answer is checked against the value domain. A name passed this
+way shadows the library function of that name for the runs those options
+are given to. `Math.random` draws from the source `Options::random` names, a
+callable answering 64 random bits; without one it draws from a source seeded
+from the standard library's per-process hash keys, which needs no
+dependency and is not cryptographic. `Date.now` reads the run's clock, as
+`relative_date` does.
 
 ## Differences from the reference
 
@@ -117,7 +148,45 @@ code says otherwise, or has no counterpart in the reference:
   can record a different precision for the same instant.
 - **A float that is not finite is refused** where a value crosses into the
   crate, with the reason `non_finite_number`; the reference's floats cannot
-  hold one.
+  hold one.- **`index_of` counts grapheme clusters**, as `len` and `substring` do: it
+  answers the index of the first cluster of the first occurrence that is a
+  run of whole clusters (an occurrence starting or ending inside a cluster
+  is passed over), or `-1`. The reference's code answers a byte offset there
+  while it counts `len` and `substring` in clusters. Clusters are the
+  extended grapheme clusters of the Unicode version `unicode-segmentation`
+  implements.
+- **A function result outside `i64` is refused.** `Math.pow` on two
+  integers, `Math.abs` of the least `i64`, and `Math.floor`, `Math.ceil` or
+  `Math.round` of a float past the `i64` range fail with an
+  `EvaluationError`, reason `integer_overflow`; the reference's code answers
+  an integer of any size. `Math.floor` and `Math.ceil` read an integer as a
+  float first, as the reference's code does, so an integer past 2^53 may
+  answer its nearest float's value, and `i64::MAX` overflows.
+- **A function float that is not finite is refused.** `Math.pow` whose
+  answer is not a finite float (`Math.pow(0, -1)`, `Math.pow(-8, 0.5)`, an
+  overflow) fails with an `EvaluationError`, reason `non_finite_number`;
+  the reference's code raises there.
+- **`Math.random` draws from a source passed per call** (`Options::random`)
+  and turns its 64 bits into a float in `[0, 1)`, the top 53 bits over 2^53;
+  the reference's code draws from its runtime's process-wide generator.
+- **A host function takes its arguments only**, with no arity of its own
+  (ruled by the operator, 2026-11-20). The reference's functions also
+  receive the run's context, and a host's function there declares an arity
+  the evaluator checks.
+- **`JSON.stringify` writes what the reference's encoder writes** (keys in
+  the reference's order, integers first, then `false`, `true` and
+  undefined as text, then strings; a date and an instant as their text,
+  undefined as `"undefined"`, a duration as the map of its eight units) and
+  refuses only a value nested past 100 levels, with the reason
+  `depth_limit_exceeded`; the reference's code never refuses.
+- **`JSON.parse` reports the reference's fault text** for a byte its reader
+  refuses and for an early end (`Invalid JSON: unexpected byte 0x6F at
+  position 1`, as the reason). An integer outside `i64` fails with the
+  reason `integer_out_of_range`, a number too large for a finite float with
+  `non_finite_number`, and a text nested past 100 levels with
+  `depth_limit_exceeded`, where the reference answers a value; a malformed
+  `\u` escape is refused with this crate's own text, where the reference
+  writes its runtime's error term.
 - **Values are bounded at 100 levels.** Lists and maps nested past 100 levels
   are refused where a value crosses into the crate and by the tagged codec,
   with the reason `depth_limit_exceeded`; the reference has no bound. A

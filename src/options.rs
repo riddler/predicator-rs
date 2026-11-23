@@ -1,7 +1,8 @@
 //! The options one evaluation is run with, built per call.
 
-use crate::DateTime;
+use crate::{DateTime, Value};
 use core::fmt;
+use std::collections::BTreeMap;
 
 /// What a `load` of a variable the context does not bind does.
 ///
@@ -27,6 +28,14 @@ pub enum OnUnbound {
 /// so options may be shared between threads whether or not they name one.
 type Clock<'a> = Box<dyn Fn() -> Option<DateTime> + Send + Sync + 'a>;
 
+/// A function the host passes in by name: it takes the call's arguments
+/// and answers a value, or refuses with a message.
+type HostFunction<'a> = Box<dyn Fn(&[Value]) -> Result<Value, String> + Send + Sync + 'a>;
+
+/// The random source `Math.random` draws from: each call answers 64 random
+/// bits.
+type Random<'a> = Box<dyn Fn() -> u64 + Send + Sync + 'a>;
+
 /// The options an evaluation is run with, built per call: nothing is
 /// configured globally.
 ///
@@ -41,6 +50,20 @@ type Clock<'a> = Box<dyn Fn() -> Option<DateTime> + Send + Sync + 'a>;
 /// is `Send` and `Sync` and may borrow from its caller, so `Options` is
 /// `Send` and `Sync` whether or not it names one.
 ///
+/// A host function is passed by name ([`Options::function`]) and is called
+/// by the `call` instruction with the call's arguments and nothing else. It
+/// answers a value, which is checked against the value domain, or refuses
+/// with a message, which fails the run with an
+/// [`EvaluationError`](crate::EvaluationError) whose reason is that
+/// message. A name passed this way shadows the library function of that
+/// name for the runs these options are given to, and no other.
+///
+/// The random source is the one `Math.random` draws from
+/// ([`Options::random`]). Without one, a run draws from a source seeded
+/// from the standard library's per-process hash keys, which is not
+/// cryptographic and must not be used where a guess at the next draw would
+/// matter.
+///
 /// ```
 /// use predicator_rs::{Date, DateTime, OnUnbound, Options};
 ///
@@ -49,11 +72,20 @@ type Clock<'a> = Box<dyn Fn() -> Option<DateTime> + Send + Sync + 'a>;
 /// let noon = DateTime::new(Date::new(2030, 1, 15).unwrap(), 12, 0, 0, 0);
 /// let fixed = Options::new().clock(move || noon);
 /// # let _ = fixed;
+/// let hosted = Options::new()
+///     .function("double", |arguments| match arguments {
+///         [predicator_rs::Value::Integer(x)] => Ok(predicator_rs::Value::from(x * 2)),
+///         _ => Err("double expects one integer".to_owned()),
+///     })
+///     .random(|| 0);
+/// # let _ = hosted;
 /// ```
 #[derive(Default)]
 pub struct Options<'a> {
     pub(crate) on_unbound: OnUnbound,
     pub(crate) clock: Option<Clock<'a>>,
+    pub(crate) functions: BTreeMap<String, HostFunction<'a>>,
+    pub(crate) random: Option<Random<'a>>,
 }
 
 impl<'a> Options<'a> {
@@ -78,6 +110,65 @@ impl<'a> Options<'a> {
         self
     }
 
+    /// The same options with `function` passed in under `name`, replacing a
+    /// function these options already pass under that name. The `call`
+    /// instruction calls it with the call's arguments, deepest first, in
+    /// place of any library function of that name. It answers the call's
+    /// value or refuses with a message; a refusal fails the run with an
+    /// [`EvaluationError`](crate::EvaluationError) whose reason and message
+    /// are that message, and an answer outside the value domain (a float
+    /// that is not finite, lists and maps nested past 100 levels) fails it
+    /// with the reason the domain check gives. No arity is checked: the
+    /// function sees however many arguments the call passes.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Instructions, Options, Value, evaluate};
+    ///
+    /// let options = Options::new().function("len", |arguments| Ok(Value::from(arguments.len() as i64)));
+    /// let program = Instructions::from_json(r#"[["lit","x"],["lit","y"],["call","len",2]]"#)?;
+    /// assert_eq!(evaluate(&program, &Context::new(), &options)?, Value::from(2));
+    /// # Ok::<(), predicator_rs::Error>(())
+    /// ```
+    #[must_use]
+    pub fn function(
+        mut self,
+        name: impl Into<String>,
+        function: impl Fn(&[Value]) -> Result<Value, String> + Send + Sync + 'a,
+    ) -> Options<'a> {
+        self.functions.insert(name.into(), Box::new(function));
+        self
+    }
+
+    /// The same options with `random` as the source `Math.random` draws
+    /// from, in place of the default. Each draw calls it once and turns the
+    /// 64 bits it answers into a float in `[0, 1)`: the top 53 bits, over
+    /// 2^53. A source that must change state between draws keeps that state
+    /// behind a shared reference (an atomic, a mutex).
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Instructions, Options, Value, evaluate};
+    ///
+    /// let program = Instructions::from_json(r#"[["call","Math.random",0]]"#)?;
+    /// let half = Options::new().random(|| 1 << 63);
+    /// assert_eq!(evaluate(&program, &Context::new(), &half)?, Value::from(0.5));
+    /// # Ok::<(), predicator_rs::Error>(())
+    /// ```
+    #[must_use]
+    pub fn random(mut self, random: impl Fn() -> u64 + Send + Sync + 'a) -> Options<'a> {
+        self.random = Some(Box::new(random));
+        self
+    }
+
+    /// The host function these options pass under `name`, if any.
+    pub(crate) fn host_function(&self, name: &str) -> Option<&HostFunction<'a>> {
+        self.functions.get(name)
+    }
+
+    /// The random source these options name, if any.
+    pub(crate) fn random_source(&self) -> Option<&Random<'a>> {
+        self.random.as_ref()
+    }
+
     /// The current time from the clock these options name, or the system
     /// clock when they name none.
     pub(crate) fn now(&self) -> Option<DateTime> {
@@ -95,9 +186,17 @@ impl fmt::Debug for Options<'_> {
         } else {
             "system"
         };
+        let random = if self.random.is_some() {
+            "given"
+        } else {
+            "default"
+        };
+        let functions: Vec<&str> = self.functions.keys().map(String::as_str).collect();
         f.debug_struct("Options")
             .field("on_unbound", &self.on_unbound)
             .field("clock", &clock)
+            .field("functions", &functions)
+            .field("random", &random)
             .finish()
     }
 }
@@ -123,15 +222,25 @@ mod tests {
     fn thread_safe<T: Send + Sync>(_: &T) {}
 
     // Sabotage: with the Send + Sync bound removed from Clock and from
-    // Options::clock, this test fails to compile.
+    // Options::clock (or from HostFunction and Options::function, or from
+    // Random and Options::random), this test fails to compile.
     #[test]
     fn options_and_a_context_may_be_shared_between_threads() {
         let reads = std::sync::atomic::AtomicU32::new(0);
+        let draws = std::sync::atomic::AtomicU64::new(0);
         thread_safe(&Options::new());
         thread_safe(&Options::new().clock(|| {
             reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             None
         }));
+        thread_safe(
+            &Options::new()
+                .function("f", |_| {
+                    reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(Value::Null)
+                })
+                .random(|| draws.fetch_add(1, std::sync::atomic::Ordering::SeqCst)),
+        );
         thread_safe(&crate::Context::new());
     }
 
@@ -146,11 +255,38 @@ mod tests {
         assert!(system.unix_seconds() > 1_790_000_000);
         assert_eq!(
             format!("{:?}", Options::new()),
-            "Options { on_unbound: Undefined, clock: \"system\" }"
+            "Options { on_unbound: Undefined, clock: \"system\", functions: [], random: \"default\" }"
         );
         assert_eq!(
-            format!("{:?}", Options::new().clock(|| None)),
-            "Options { on_unbound: Undefined, clock: \"given\" }"
+            format!(
+                "{:?}",
+                Options::new()
+                    .clock(|| None)
+                    .function("b", |_| Ok(Value::Null))
+                    .function("a", |_| Ok(Value::Null))
+                    .random(|| 0)
+            ),
+            "Options { on_unbound: Undefined, clock: \"given\", functions: [\"a\", \"b\"], random: \"given\" }"
         );
+    }
+
+    // Sabotage: with Options::function keeping the first function passed
+    // under a name rather than the last, this test fails.
+    #[test]
+    fn a_function_passed_twice_under_one_name_is_the_last() {
+        let options = Options::new()
+            .function("f", |_| Ok(Value::from(1)))
+            .function("f", |_| Ok(Value::from(2)));
+        let answer = options.host_function("f").map(|function| function(&[]));
+        assert_eq!(answer, Some(Ok(Value::from(2))));
+        assert!(options.host_function("g").is_none());
+        assert_eq!(
+            Options::new()
+                .random(|| 7)
+                .random_source()
+                .map(|random| random()),
+            Some(7)
+        );
+        assert!(Options::new().random_source().is_none());
     }
 }
