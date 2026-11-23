@@ -141,6 +141,20 @@ fn equal(left: &Value, right: &Value) -> Option<bool> {
     Some(members_equal(left, right))
 }
 
+/// Whether a list's `member` equals the `needle` membership looks for, as
+/// the reference's membership equality finds them: undefined equals
+/// nothing, null equals null (the one place null is a value rather than an
+/// absence), and every other pair is equal when `EQ` answers `true` for it,
+/// so numbers match across integer and float and a date matches an instant
+/// at its midnight UTC.
+pub(crate) fn member_equal(member: &Value, needle: &Value) -> bool {
+    match (member, needle) {
+        (Value::Undefined, _) | (_, Value::Undefined) => false,
+        (Value::Null, Value::Null) => true,
+        _ => equal(member, needle) == Some(true),
+    }
+}
+
 /// Whether two values are equal as the reference's structural equality
 /// finds them, walked without recursion: numbers by number across integer
 /// and float, two dates or two instants by instant, two nulls equal and two

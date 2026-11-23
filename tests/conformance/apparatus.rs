@@ -329,7 +329,7 @@ fn the_runner_answers_every_case_of_each_surface_and_skips_none() {
 // Sabotage: with registry::encode writing an entry's surface before its
 // case_id, this test fails on the encoding check.
 #[test]
-fn the_vendored_registry_passes_and_claims_the_evaluator_at_tier_one() {
+fn the_vendored_registry_passes_and_claims_the_evaluator_at_tier_three() {
     let corpus = corpus();
     let bytes = std::fs::read(root().join(registry::FILE)).unwrap();
     assert_eq!(
@@ -339,7 +339,7 @@ fn the_vendored_registry_passes_and_claims_the_evaluator_at_tier_one() {
     let parsed = registry::parse(&bytes).unwrap();
     assert_eq!(
         parsed.claims,
-        vec![ratchet::parse_claim("evaluator:1").unwrap()]
+        vec![ratchet::parse_claim("evaluator:3").unwrap()]
     );
     assert_eq!(parsed.corpus_hash, CORPUS_HASH);
     assert_eq!(
