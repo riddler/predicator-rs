@@ -75,8 +75,8 @@ cannot become one of the target type, `null`, a list and a map included,
 casts to undefined rather than failing. A string is read whole, with no
 trimming: an integer as `-?[0-9]+`, a float as `-?[0-9]+(\.[0-9]+)?`, a
 boolean as exactly `true` or `false`, a date as `YYYY-MM-DD`, an instant as
-the reference reads one (a `T` or a space before the time, a fraction after
-a full stop or a comma, read to the microsecond, and an offset of `Z`,
+an ISO 8601 datetime (a `T` before the time, a fraction after a full stop
+or a comma, read to the microsecond, and an offset of `Z`,
 `+HH:MM`, `+HHMM` or `+HH`, either sign), and a duration as the
 duration-literal grammar, fractions included (`"1.5s"` is a second and 500
 milliseconds). A float is written as the reference writes one (`1.0e16`,
@@ -187,13 +187,15 @@ code says otherwise, or has no counterpart in the reference:
   states that nothing outside them is an instant. The reference's code makes
   the instant, raises when it writes one past 9999 or before -9999 as text,
   and writes one between as text with a minus sign.
-- **`::date` reads a four-digit year only**, the calendar date the
-  reference's instruction-set text names; the reference's code also reads a
-  year with a minus sign (`-0005-01-01`).
-- **`::datetime` reads a space before the time**, as the reference's code
-  does, though the reference's instruction-set text names an ISO 8601
-  datetime, which separates them with a `T`. The tagged codec reads instants
-  the same way, so this crate has one instant reader.
+- **`::date` and `::datetime` read a four-digit year only**, the calendar
+  date and the ISO 8601 datetime the reference's instruction-set text
+  names; the reference's code also reads a year with a minus sign
+  (`-0005-01-01`) or a plus sign (`+2026-08-09`,
+  `+2026-08-09T10:00:00Z`).
+- **`::datetime` refuses a space before the time.** The reference's
+  instruction-set text names an ISO 8601 datetime, which separates the date
+  from the time with a `T`; the reference's code also reads a space there
+  (`2026-08-09 10:00:00Z`), and this crate's tagged codec still does.
 - **A float result that is not finite is refused.** `add`, `subtract`,
   `multiply` or `divide` whose float result overflows fails with an
   `EvaluationError`, reason `non_finite_number`; the reference's code raises
