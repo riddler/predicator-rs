@@ -113,6 +113,12 @@ impl Date {
         days_from_civil(self.year, self.month(), self.day())
     }
 
+    /// The date `days` after 1970-01-01 (before it when negative), or
+    /// `None` when its year is outside `i32`.
+    pub(crate) fn from_days(days: i64) -> Option<Date> {
+        civil_from_days(days)
+    }
+
     /// Reads `YYYY-MM-DD` with a four-digit year, the form the tagged
     /// encoding carries.
     pub(crate) fn parse(text: &str) -> Option<Date> {

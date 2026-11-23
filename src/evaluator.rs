@@ -7,6 +7,13 @@
 //! does not know, and one the instruction set has retired ([`RETIRED`]), is
 //! refused by its name alone. An opcode a later tier adds is a row added to
 //! the table and an arm added to [`Machine::step`].
+//!
+//! The arithmetic instructions live in `arithmetic`, and reading into a
+//! value (`access`, `bracket_access`) and the containment `in` and
+//! `contains` share in `access`.
+
+mod access;
+mod arithmetic;
 
 use crate::compare::{self, Operator};
 use crate::options::OnUnbound;
@@ -14,6 +21,7 @@ use crate::{
     Context, Error, EvaluationError, Instructions, Options, TypeMismatchError,
     UndefinedVariableError, Value,
 };
+use arithmetic::Arithmetic;
 
 /// The program an entry point is given: what can be run as an instruction
 /// list. The trait is sealed; it is implemented for `&Instructions`.
@@ -49,6 +57,12 @@ enum Op<'a> {
     UnaryMinus,
     JumpIfFalsyOrPop(usize),
     JumpIfTrueOrPop(usize),
+    Arithmetic(Arithmetic),
+    Access(&'a str),
+    BracketAccess,
+    In,
+    Contains,
+    MakeList(usize),
 }
 
 /// One row of the dispatch table: an opcode's name and the reader of its
@@ -92,6 +106,46 @@ const OPCODES: &[Row] = &[
         name: "jump_if_true_or_pop",
         read: |operands| offset(operands).map(Op::JumpIfTrueOrPop),
     },
+    Row {
+        name: "add",
+        read: |operands| bare(operands, Op::Arithmetic(Arithmetic::Add)),
+    },
+    Row {
+        name: "subtract",
+        read: |operands| bare(operands, Op::Arithmetic(Arithmetic::Subtract)),
+    },
+    Row {
+        name: "multiply",
+        read: |operands| bare(operands, Op::Arithmetic(Arithmetic::Multiply)),
+    },
+    Row {
+        name: "divide",
+        read: |operands| bare(operands, Op::Arithmetic(Arithmetic::Divide)),
+    },
+    Row {
+        name: "modulo",
+        read: |operands| bare(operands, Op::Arithmetic(Arithmetic::Modulo)),
+    },
+    Row {
+        name: "access",
+        read: read_access,
+    },
+    Row {
+        name: "bracket_access",
+        read: |operands| bare(operands, Op::BracketAccess),
+    },
+    Row {
+        name: "in",
+        read: |operands| bare(operands, Op::In),
+    },
+    Row {
+        name: "contains",
+        read: |operands| bare(operands, Op::Contains),
+    },
+    Row {
+        name: "make_list",
+        read: read_make_list,
+    },
 ];
 
 /// The opcodes the instruction set has retired, each with the version that
@@ -108,6 +162,24 @@ fn read_lit(operands: &[Value]) -> Option<Op<'_>> {
 fn read_load(operands: &[Value]) -> Option<Op<'_>> {
     match operands {
         [Value::String(name)] => Some(Op::Load(name)),
+        _ => None,
+    }
+}
+
+fn read_access(operands: &[Value]) -> Option<Op<'_>> {
+    match operands {
+        [Value::String(property)] => Some(Op::Access(property)),
+        _ => None,
+    }
+}
+
+/// `make_list`'s count: one non-negative integer. A count past the address
+/// space asks for more values than any stack holds.
+fn read_make_list(operands: &[Value]) -> Option<Op<'_>> {
+    match operands {
+        [Value::Integer(count)] if *count >= 0 => {
+            Some(Op::MakeList(usize::try_from(*count).unwrap_or(usize::MAX)))
+        }
         _ => None,
     }
 }
@@ -224,6 +296,24 @@ fn mismatch(operation: &str, expected: &str, operand: &Value) -> Fault {
     }
 }
 
+/// The refusal of a pair by `operation`, which wanted a `wanted`. It names
+/// an undefined operand when either is one, so that an unbound load is
+/// reported as such.
+fn mismatch_pair(operation: &str, wanted: &str, left: &Value, right: &Value) -> Fault {
+    let error = TypeMismatchError::new(
+        operation,
+        format!(
+            "{operation} takes a {wanted}, not a {} and a {}",
+            type_name(left),
+            type_name(right)
+        ),
+    );
+    match (left, right) {
+        (Value::Undefined, _) | (_, Value::Undefined) => Fault::RejectedUndefined(error),
+        _ => Fault::Error(error.into()),
+    }
+}
+
 impl<'a> Machine<'a> {
     /// Runs `list` from its first instruction to its end and answers the
     /// top of the stack.
@@ -269,6 +359,35 @@ impl<'a> Machine<'a> {
                     other => return Err(mismatch("unary_minus", "number", other)),
                 };
             }
+            Op::Arithmetic(operation) => {
+                let (right, left) = self.pair(operation.name())?;
+                self.stack.push(arithmetic::apply(operation, left, right)?);
+            }
+            Op::Access(property) => {
+                let target = self.stack.pop().ok_or_else(|| insufficient("access", 1))?;
+                self.stack.push(access::access(target, property));
+            }
+            Op::BracketAccess => {
+                let (key, target) = self.pair("bracket_access")?;
+                self.stack.push(access::bracket(target, &key)?);
+            }
+            Op::In => {
+                let (container, needle) = self.pair("in")?;
+                self.stack.push(access::containment(&container, &needle));
+            }
+            Op::Contains => {
+                let (needle, container) = self.pair("contains")?;
+                self.stack.push(access::containment(&container, &needle));
+            }
+            Op::MakeList(count) => {
+                let at = self
+                    .stack
+                    .len()
+                    .checked_sub(count)
+                    .ok_or_else(|| insufficient("make_list", count))?;
+                let items = self.stack.split_off(at);
+                self.stack.push(Value::List(items));
+            }
             Op::JumpIfFalsyOrPop(offset) => {
                 if !self.condition("jump_if_falsy_or_pop")? {
                     return Ok(at.saturating_add(offset));
@@ -283,6 +402,14 @@ impl<'a> Machine<'a> {
             }
         }
         Ok(next)
+    }
+
+    /// The top two values, popped: the top first, then the one beneath it.
+    fn pair(&mut self, operation: &str) -> Result<(Value, Value), Fault> {
+        let (Some(top), Some(beneath)) = (self.stack.pop(), self.stack.pop()) else {
+            return Err(insufficient(operation, 2).into());
+        };
+        Ok((top, beneath))
     }
 
     /// Pushes the value bound to the root `name`, or undefined when it is
@@ -434,7 +561,7 @@ mod tests {
             evaluation("retired_opcode")
         );
         for text in [
-            r#"[["add"]]"#,
+            r#"[["intersects"]]"#,
             r#"[["bogus",1]]"#,
             r#"[[]]"#,
             r#"[[5]]"#,
@@ -468,6 +595,15 @@ mod tests {
             r#"[["lit",true],["jump_if_true_or_pop",-1]]"#,
             r#"[["lit",true],["jump_if_true_or_pop",1.0]]"#,
             r#"[["lit",true],["jump_if_true_or_pop"]]"#,
+            r#"[["lit",1],["lit",2],["add",1]]"#,
+            r#"[["lit",{}],["access"]]"#,
+            r#"[["lit",{}],["access",1]]"#,
+            r#"[["lit",{}],["lit","a"],["bracket_access","a"]]"#,
+            r#"[["lit",1],["lit",[1]],["in",1]]"#,
+            r#"[["lit",[1]],["lit",1],["contains",null]]"#,
+            r#"[["make_list",-1]]"#,
+            r#"[["make_list",1.0]]"#,
+            r#"[["make_list"]]"#,
         ] {
             assert_eq!(refusal(text), evaluation("unknown_instruction"), "{text}");
         }

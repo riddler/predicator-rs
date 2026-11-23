@@ -12,10 +12,12 @@ usable version is 0.1.0. What the source holds so far is the value model
 tagged-value encoding (`tagged`), and the evaluator's first tier:
 `evaluate` runs an instruction list (`Instructions`, read from JSON in the
 tagged encoding) over a `Context`, with `Options` passed per call. It runs
-`lit`, `load`, `compare`, `not`, `unary_bang`, `unary_minus`,
-`jump_if_falsy_or_pop` and `jump_if_true_or_pop`, and refuses every other
-opcode as `unknown_instruction` until a later version adds it (the retired
-`and` and `or` as `retired_opcode`). A variable the context does not bind
+the instruction set's first three tiers: `lit`, `load`, `compare`, `not`,
+`unary_bang`, `unary_minus`, `jump_if_falsy_or_pop` and
+`jump_if_true_or_pop`; the arithmetic `add`, `subtract`, `multiply`,
+`divide` and `modulo`; and `access`, `bracket_access`, `in`, `contains` and
+`make_list`. It refuses every other opcode as `unknown_instruction` until a
+later version adds it (the retired `and` and `or` as `retired_opcode`). A variable the context does not bind
 reads as undefined, and the evaluation fails with an `UndefinedVariableError`
 when undefined is its answer or an instruction refuses it; with
 `Options::new().on_unbound(OnUnbound::Error)` the load itself fails.
@@ -30,8 +32,29 @@ code says otherwise, or has no counterpart in the reference:
 - **Integers are 64-bit.** An integer is an `i64`; the reference's integers
   have no bound (ruled by the operator, 2026-11-20). The tagged codec refuses
   an integer outside that range with the reason `integer_out_of_range`,
-  rather than reading it as a float, and `unary_minus` on the least `i64`
-  fails with an `EvaluationError`, reason `integer_overflow`.
+  rather than reading it as a float. Every integer step is checked: `add`,
+  `subtract`, `multiply` or `divide` on two integers whose result is outside
+  that range, and `unary_minus` on the least `i64`, fail with an
+  `EvaluationError`, reason `integer_overflow`, never a wrapped or rounded
+  number. (`modulo` cannot leave the range: the least `i64` modulo `-1` is
+  `0`.)
+- **A float result that is not finite is refused.** `add`, `subtract`,
+  `multiply` or `divide` whose float result overflows fails with an
+  `EvaluationError`, reason `non_finite_number`; the reference's code raises
+  there.
+- **Bracket access on a date or an instant answers undefined, whatever the
+  key**, as the reference's instruction-set text states it for a target that
+  is neither a map nor a list. The reference's code holds a date as a map, so
+  there a key that is not a map key kind (a float, a list) is a
+  `TypeMismatchError`.
+- **Date arithmetic outside the years this crate holds is refused.** A date
+  or an instant moves by a duration as the reference's code moves it (a week
+  is 7 days, a month 30 and a year 365; a date moves by whole days, its
+  hours, minutes and seconds truncated toward zero and its milliseconds left
+  out; an instant moves to the second, and by its milliseconds only when they
+  are positive). A result whose year falls outside `i32` fails with an
+  `EvaluationError`, reason `date_out_of_range`; the reference's code answers
+  a date at any year.
 - **Two maps, or two durations, have no order.** `compare` under `GT`, `LT`,
   `GTE` or `LTE` answers undefined for two maps or two durations, and for a
   pair of list members that are two maps, two durations or two of the
@@ -57,7 +80,10 @@ code says otherwise, or has no counterpart in the reference:
 - **A duration is one kind of value**: the map of its eight units, `years`
   through `milliseconds`, the same whether a literal, an instruction or the
   host made it, as the reference's instruction-set text states it. A unit may
-  be negative.
+  be negative. `access` and `bracket_access` read a unit by its name from any
+  duration, and `add` and `subtract` move a date by any duration; the
+  reference's code reads a unit only from a duration the host supplied, and
+  moves a date only by one a literal or an instruction made.
 - **A duration's text writes a negative unit with its sign** (`-3d`). The
   reference's instruction-set text leaves out only a zero unit; its code
   leaves out a negative one too.

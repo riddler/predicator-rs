@@ -6,13 +6,15 @@
 //! [`Error`] every entry point answers, and the [`tagged`] codec for the
 //! conformance corpus's tagged-value encoding.
 //!
-//! The evaluator runs the instruction set's first tier so far: [`evaluate`]
-//! runs [`Instructions`] (read with [`Instructions::from_json`]) over a
-//! [`Context`] with the [`Options`] given per call, answering a [`Value`].
-//! It runs `lit`, `load`, `compare`, `not`, `unary_bang`, `unary_minus`,
-//! `jump_if_falsy_or_pop` and `jump_if_true_or_pop`; every other opcode is
-//! refused as `unknown_instruction`, and the retired `and` and `or` as
-//! `retired_opcode`. The compiler is to come.
+//! The evaluator runs the instruction set's first three tiers so far:
+//! [`evaluate`] runs [`Instructions`] (read with
+//! [`Instructions::from_json`]) over a [`Context`] with the [`Options`]
+//! given per call, answering a [`Value`]. It runs `lit`, `load`, `compare`,
+//! `not`, `unary_bang`, `unary_minus`, `jump_if_falsy_or_pop` and
+//! `jump_if_true_or_pop`; `add`, `subtract`, `multiply`, `divide` and
+//! `modulo`; and `access`, `bracket_access`, `in`, `contains` and
+//! `make_list`. Every other opcode is refused as `unknown_instruction`, and
+//! the retired `and` and `or` as `retired_opcode`. The compiler is to come.
 //!
 //! With the `serde` feature (off by default), [`Value`] implements
 //! `Serialize` and `Deserialize` in the tagged encoding, and [`Date`],
