@@ -118,7 +118,7 @@ pub(super) fn shift(now: DateTime, duration: &Duration, sign: i128) -> Result<Va
 #[cfg(test)]
 mod tests {
     use crate::{Context, Date, DateTime, Duration, Error, Instructions, Options, Value, evaluate};
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     fn run_with(text: &str, options: &Options) -> Result<Value, Error> {
         evaluate(
@@ -332,9 +332,9 @@ mod tests {
     // check, this test fails.
     #[test]
     fn relative_date_refuses_before_it_reads_the_clock() {
-        let reads = Cell::new(0);
+        let reads = AtomicU32::new(0);
         let options = Options::new().clock(|| {
-            reads.set(reads.get() + 1);
+            reads.fetch_add(1, Ordering::SeqCst);
             Some(noon())
         });
         let refused = |text: &str| {
@@ -367,17 +367,17 @@ mod tests {
                 "{text}"
             );
         }
-        assert_eq!(reads.get(), 0);
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
     }
 
     // Sabotage: with Machine::now reading the clock on every call (the
     // cache never filled), this test fails.
     #[test]
     fn a_run_reads_the_clock_at_most_once_and_only_when_it_reads_the_time() {
-        let reads = Cell::new(0);
+        let reads = AtomicU32::new(0);
         let ticking = Options::new().clock(|| {
-            reads.set(reads.get() + 1);
-            DateTime::from_unix(i64::from(reads.get()) * 3600, 0)
+            let read = reads.fetch_add(1, Ordering::SeqCst) + 1;
+            DateTime::from_unix(i64::from(read) * 3600, 0)
         });
         // Two reads of the time in one run see the same instant.
         assert_eq!(
@@ -388,17 +388,17 @@ mod tests {
             .unwrap(),
             Value::from(true)
         );
-        assert_eq!(reads.get(), 1);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
         // A run that never reads the time never reads the clock.
         run_with(
             r#"[["duration",[[1,"d"]]],["lit",1],["compare","EQ"]]"#,
             &ticking,
         )
         .unwrap();
-        assert_eq!(reads.get(), 1);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
         // Each run reads it afresh.
         run_with(r#"[["duration",[]],["relative_date","ago"]]"#, &ticking).unwrap();
-        assert_eq!(reads.get(), 2);
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
     }
 
     // Sabotage: with Machine::now answering the epoch when the clock gives

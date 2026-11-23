@@ -23,8 +23,9 @@ pub enum OnUnbound {
     Error,
 }
 
-/// The clock a run reads the current time from.
-type Clock<'a> = Box<dyn Fn() -> Option<DateTime> + 'a>;
+/// The clock a run reads the current time from. It is `Send` and `Sync`,
+/// so options may be shared between threads whether or not they name one.
+type Clock<'a> = Box<dyn Fn() -> Option<DateTime> + Send + Sync + 'a>;
 
 /// The options an evaluation is run with, built per call: nothing is
 /// configured globally.
@@ -36,7 +37,9 @@ type Clock<'a> = Box<dyn Fn() -> Option<DateTime> + 'a>;
 /// program does not; every later read in the same run answers the same
 /// instant. A clock that answers `None` fails the run with an
 /// [`EvaluationError`](crate::EvaluationError), reason `clock_unavailable`.
-/// Without one, the run reads the system clock, to the microsecond.
+/// Without one, the run reads the system clock, to the microsecond. A clock
+/// is `Send` and `Sync` and may borrow from its caller, so `Options` is
+/// `Send` and `Sync` whether or not it names one.
 ///
 /// ```
 /// use predicator_rs::{Date, DateTime, OnUnbound, Options};
@@ -70,7 +73,7 @@ impl<'a> Options<'a> {
     /// The same options with `clock` as the clock a run reads the current
     /// time from, in place of the system clock.
     #[must_use]
-    pub fn clock(mut self, clock: impl Fn() -> Option<DateTime> + 'a) -> Options<'a> {
+    pub fn clock(mut self, clock: impl Fn() -> Option<DateTime> + Send + Sync + 'a) -> Options<'a> {
         self.clock = Some(Box::new(clock));
         self
     }
@@ -116,6 +119,21 @@ fn system_now() -> Option<DateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn thread_safe<T: Send + Sync>(_: &T) {}
+
+    // Sabotage: with the Send + Sync bound removed from Clock and from
+    // Options::clock, this test fails to compile.
+    #[test]
+    fn options_and_a_context_may_be_shared_between_threads() {
+        let reads = std::sync::atomic::AtomicU32::new(0);
+        thread_safe(&Options::new());
+        thread_safe(&Options::new().clock(|| {
+            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        }));
+        thread_safe(&crate::Context::new());
+    }
 
     // Sabotage: with now always reading the system clock, this test fails.
     #[test]
