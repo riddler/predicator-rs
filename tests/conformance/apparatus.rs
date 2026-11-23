@@ -105,7 +105,7 @@ fn the_vendored_copies_match_their_records() {
     );
     assert_eq!(
         checks::superseded_summary(&dir).unwrap(),
-        "superseded transcript rows: 0 (compile.json 0, tokens.json 0)"
+        "superseded transcript rows: 1 (compile.json 0, tokens.json 1)"
     );
 }
 

@@ -47,6 +47,13 @@ mod evaluator;
 mod execution;
 mod instructions;
 mod json;
+// The lexer has no caller in the library until the compiler uses it; the
+// expectation fails the build once one does, so it comes off then.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "no caller until the compiler uses the lexer")
+)]
+mod lexer;
 mod map;
 mod options;
 #[cfg(feature = "serde")]
