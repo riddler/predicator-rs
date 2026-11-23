@@ -166,8 +166,8 @@ impl CaseShape {
 /// What a case expects of the evaluator.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expected {
-    /// The evaluation's result, as the corpus encodes it.
-    Result(Value),
+    /// The evaluation's result, decoded from the corpus's tagged encoding.
+    Result(predicator_rs::Value),
     /// The error's normative type and reason (never its message).
     Error {
         /// One of the reference's three error type names.
@@ -185,10 +185,10 @@ pub struct Case {
     /// The source the compiler surface compiles; `None` for an
     /// evaluator-only case.
     pub source: Option<String>,
-    /// The compiled instruction list.
-    pub instructions: Value,
-    /// The variable bindings.
-    pub context: Value,
+    /// The compiled instruction list, its literal operands decoded.
+    pub instructions: predicator_rs::Value,
+    /// The variable bindings, decoded.
+    pub context: predicator_rs::Value,
     /// The result or error the evaluator gives.
     pub expected: Expected,
     /// The case's tier.
@@ -200,11 +200,12 @@ pub struct Case {
 }
 
 /// The one place a predicator value is read out of a case: the context, the
-/// instructions and the expected result all pass through here. It takes the
-/// corpus's tagged-value encoding as it stands; the tagged codec, when the
-/// crate has one, reads it here instead.
-pub fn case_value(value: &Value) -> Value {
-    value.clone()
+/// instructions and the expected result all pass through here, read by the
+/// crate's own tagged codec (`predicator_rs::tagged::decode`) from their
+/// compact JSON text.
+pub fn case_value(value: &Value) -> Result<predicator_rs::Value, String> {
+    predicator_rs::tagged::decode(&value.to_string())
+        .map_err(|error| format!("{}: {}", error.reason(), error.message()))
 }
 
 fn read_case(line: &str, file: &str, number: usize, shape: &CaseShape) -> Result<Case, String> {
@@ -226,7 +227,9 @@ fn read_case(line: &str, file: &str, number: usize, shape: &CaseShape) -> Result
         _ => return Err(wrong("source is neither a string nor null")),
     };
     let expected = match (item.get("expected_result"), item.get("expected_error")) {
-        (Some(result), None) => Expected::Result(case_value(result)),
+        (Some(result), None) => Expected::Result(
+            case_value(result).map_err(|error| wrong(&format!("expected_result: {error}")))?,
+        ),
         (None, Some(error)) => {
             let field = |key: &str| error.get(key).and_then(Value::as_str).map(str::to_owned);
             match (field("type"), field("reason")) {
@@ -247,8 +250,10 @@ fn read_case(line: &str, file: &str, number: usize, shape: &CaseShape) -> Result
     Ok(Case {
         id,
         source,
-        instructions: case_value(item.get("instructions").unwrap_or(&Value::Null)),
-        context: case_value(item.get("context").unwrap_or(&Value::Null)),
+        instructions: case_value(item.get("instructions").unwrap_or(&Value::Null))
+            .map_err(|error| wrong(&format!("instructions: {error}")))?,
+        context: case_value(item.get("context").unwrap_or(&Value::Null))
+            .map_err(|error| wrong(&format!("context: {error}")))?,
         expected,
         tier,
         features: strings(item.get("features")),
