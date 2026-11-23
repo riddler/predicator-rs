@@ -113,7 +113,11 @@ impl Scan<'_> {
                         column: column + 1,
                     };
                     let (kind, name) = if body.contains('T') {
-                        (read_datetime(body).map(Kind::DateTime), "datetime")
+                        (
+                            read_datetime(body)
+                                .map(|(instant, precision)| Kind::DateTime(instant, precision)),
+                            "datetime",
+                        )
                     } else {
                         (read_date(body).map(Kind::Date), "date")
                     };
@@ -203,8 +207,8 @@ fn read_date(body: &str) -> Option<Date> {
 
 /// A datetime literal's body, as the reference's runtime reads ISO 8601
 /// datetime text, as the instant it names; one outside the years 0 to 9999
-/// is refused.
-fn read_datetime(body: &str) -> Option<DateTime> {
+/// is refused; with the count of fraction digits it writes, up to six.
+fn read_datetime(body: &str) -> Option<(DateTime, u8)> {
     let (mut fields, sign) = Fields::signed(body);
     let date = fields.date(sign)?;
     if !matches!(fields.next()?, b'T' | b' ') {
@@ -215,21 +219,22 @@ fn read_datetime(body: &str) -> Option<DateTime> {
     let minute = fields.number(2)?;
     fields.literal(b':')?;
     let second = fields.number(2)?;
-    let (microsecond, rest) = microsecond(fields.bytes)?;
+    let (microsecond, precision, rest) = microsecond(fields.bytes)?;
     let offset = offset(rest)?;
     let local = DateTime::new(date, hour, minute, second, microsecond)?;
     let instant = DateTime::from_unix(local.unix_seconds().checked_sub(offset)?, microsecond)?;
     (0..=9999)
         .contains(&instant.date().year())
-        .then_some(instant)
+        .then_some((instant, precision))
 }
 
 /// The fraction of a second after a full stop or a comma, as microseconds
-/// (digits past the sixth dropped; at least one digit), and the text after
-/// it; 0 and the text as it is when no fraction is written.
-fn microsecond(bytes: &[u8]) -> Option<(u32, &[u8])> {
+/// (digits past the sixth dropped; at least one digit), how many digits
+/// it writes up to six, and the text after it; 0, 0 and the text as it is
+/// when no fraction is written.
+fn microsecond(bytes: &[u8]) -> Option<(u32, u8, &[u8])> {
     let Some((b'.' | b',', rest)) = bytes.split_first() else {
-        return Some((0, bytes));
+        return Some((0, 0, bytes));
     };
     let count = rest.iter().take_while(|byte| byte.is_ascii_digit()).count();
     if count == 0 {
@@ -243,7 +248,8 @@ fn microsecond(bytes: &[u8]) -> Option<(u32, &[u8])> {
             .map_or(0, |byte| u32::from(byte - b'0'));
         value = value * 10 + digit;
     }
-    Some((value, rest.get(count..).unwrap_or_default()))
+    let precision = u8::try_from(count.min(6)).unwrap_or(6);
+    Some((value, precision, rest.get(count..).unwrap_or_default()))
 }
 
 /// The offset from UTC in seconds that the whole of `bytes` names, as the

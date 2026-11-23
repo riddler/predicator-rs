@@ -248,11 +248,11 @@ fn dates_and_datetimes_carry_their_values() {
              #2024-01-15T10:00:00-0200# #2024-01-15T10:00:00+-1:30# #2024-01-15T10:00:00-00#"
         ),
         vec![
-            Kind::DateTime(instant("2024-01-15T10:00:00Z")),
-            Kind::DateTime(instant("2024-01-15T04:30:00.123456Z")),
-            Kind::DateTime(instant("2024-01-15T12:00:00Z")),
-            Kind::DateTime(instant("2024-01-15T10:30:00Z")),
-            Kind::DateTime(instant("2024-01-15T10:00:00Z")),
+            Kind::DateTime(instant("2024-01-15T10:00:00Z"), 0),
+            Kind::DateTime(instant("2024-01-15T04:30:00.123456Z"), 6),
+            Kind::DateTime(instant("2024-01-15T12:00:00Z"), 0),
+            Kind::DateTime(instant("2024-01-15T10:30:00Z"), 0),
+            Kind::DateTime(instant("2024-01-15T10:00:00Z"), 0),
             Kind::Eof,
         ]
     );
@@ -285,7 +285,7 @@ fn a_datetime_outside_the_year_range_is_refused() {
     }
     assert!(matches!(
         kinds("#0000-01-01T00:00:00Z# #9999-12-31T23:59:59.999999Z#").as_slice(),
-        [Kind::DateTime(_), Kind::DateTime(_), Kind::Eof]
+        [Kind::DateTime(_, 0), Kind::DateTime(_, 6), Kind::Eof]
     ));
 }
 

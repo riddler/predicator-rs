@@ -56,6 +56,13 @@ mod json;
 mod lexer;
 mod map;
 mod options;
+// The parser has no caller in the library until the compiler uses it; the
+// expectation fails the build once one does, so it comes off then.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "no caller until the compiler uses the parser")
+)]
+mod parser;
 #[cfg(feature = "serde")]
 mod serde_impl;
 pub mod tagged;

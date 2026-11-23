@@ -127,8 +127,10 @@ pub(crate) enum Kind {
     Null,
     /// A date literal.
     Date(Date),
-    /// A datetime literal, as the instant it names.
-    DateTime(DateTime),
+    /// A datetime literal, as the instant it names, and how many digits of
+    /// a fraction of a second it writes (at most six; 0 for none), which is
+    /// the precision the reference writes the instant back with.
+    DateTime(DateTime, u8),
     /// `>`.
     Gt,
     /// `<`.
@@ -237,7 +239,7 @@ impl Kind {
             Kind::Undefined => "undefined",
             Kind::Null => "null",
             Kind::Date(_) => "date",
-            Kind::DateTime(_) => "datetime",
+            Kind::DateTime(..) => "datetime",
             Kind::Gt => "gt",
             Kind::Lt => "lt",
             Kind::Gte => "gte",
