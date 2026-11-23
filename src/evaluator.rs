@@ -12,7 +12,8 @@
 //! (`access`, `bracket_access`) and the containment `in` and `contains`
 //! share in `access`, the rich types (`object_new`, `object_set`,
 //! `duration`, `relative_date`) in `rich`, the function library `call`
-//! runs in `library`, and the write `store` makes in `store`.
+//! runs in `library`, the write `store` makes in `store`, the conversions
+//! `cast` makes in `cast`, and `presence` and `intersects` in `presence`.
 //!
 //! One machine runs both of the instruction set's modes: [`evaluate`]
 //! (expression mode) answers the top of the stack, and [`execute`] and
@@ -20,7 +21,9 @@
 
 mod access;
 mod arithmetic;
+mod cast;
 mod library;
+mod presence;
 mod rich;
 mod store;
 
@@ -31,6 +34,8 @@ use crate::{
     TypeMismatchError, UndefinedVariableError, Value,
 };
 use arithmetic::Arithmetic;
+use cast::Target;
+use presence::Presence;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::collections::hash_map::RandomState;
@@ -86,6 +91,9 @@ enum Op<'a> {
     Jump(usize),
     PopJumpIfFalsy(usize),
     JumpBackward(usize),
+    Cast(Target),
+    Presence(Presence),
+    Intersects,
 }
 
 /// One row of the dispatch table: an opcode's name and the reader of its
@@ -208,6 +216,18 @@ const OPCODES: &[Row] = &[
     Row {
         name: "jump_backward",
         read: |operands| offset(operands).map(Op::JumpBackward),
+    },
+    Row {
+        name: "cast",
+        read: |operands| string(operands).and_then(Target::named).map(Op::Cast),
+    },
+    Row {
+        name: "presence",
+        read: |operands| string(operands).and_then(Presence::named).map(Op::Presence),
+    },
+    Row {
+        name: "intersects",
+        read: |operands| bare(operands, Op::Intersects),
     },
 ];
 
@@ -554,6 +574,21 @@ impl<'a> Machine<'a> {
             Op::Contains => {
                 let (needle, container) = self.pair("contains")?;
                 self.stack.push(access::containment(&container, &needle));
+            }
+            Op::Cast(target) => {
+                let value = self.stack.pop().ok_or_else(|| insufficient("cast", 1))?;
+                self.stack.push(cast::cast(value, target)?);
+            }
+            Op::Presence(question) => {
+                let value = self
+                    .stack
+                    .pop()
+                    .ok_or_else(|| insufficient("presence", 1))?;
+                self.stack.push(presence::presence(&value, question));
+            }
+            Op::Intersects => {
+                let (right, left) = self.pair("intersects")?;
+                self.stack.push(presence::intersects(&left, &right));
             }
             Op::MakeList(count) => {
                 let at = self
@@ -981,7 +1016,7 @@ mod tests {
             evaluation("retired_opcode")
         );
         for text in [
-            r#"[["intersects"]]"#,
+            r#"[["overlaps"]]"#,
             r#"[["bogus",1]]"#,
             r#"[[]]"#,
             r#"[[5]]"#,
