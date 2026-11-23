@@ -150,7 +150,8 @@ mod no_panic {
         let count = draw.below(14);
         let mut text = String::new();
         for _ in 0..count {
-            text.push_str(draw.pick(SOURCE_PARTS));
+            let part: &&str = draw.pick(SOURCE_PARTS);
+            text.push_str(part);
             if draw.chance(3) {
                 text.push(' ');
             }
