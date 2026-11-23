@@ -180,9 +180,8 @@ assembled at the release prep from the fragments in `changelog.d/`.
 
 ## Build & Test
 
-The gate tasks will live in `mise.toml`, and CI will run the same full gate on
-every push to `main` and every pull request (`.github/workflows/ci.yml`).
-Until the scaffold lands there is no gate to run.
+The gate tasks live in `mise.toml`, and CI runs the same full gate on every
+push to `main` and every pull request (`.github/workflows/ci.yml`).
 
 ```bash
 mise install            # the Rust toolchain and cargo tools mise.toml pins
