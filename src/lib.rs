@@ -6,7 +6,8 @@
 //! [`Error`] every entry point answers, and the [`tagged`] codec for the
 //! conformance corpus's tagged-value encoding.
 //!
-//! The evaluator runs the instruction set's first five tiers so far:
+//! The evaluator runs every tier of the instruction set but casts (tier 7)
+//! and presence and overlap (tier 10) so far:
 //! [`evaluate`] runs [`Instructions`] (read with
 //! [`Instructions::from_json`]) over a [`Context`] with the [`Options`]
 //! given per call, answering a [`Value`]. It runs `lit`, `load`, `compare`,
@@ -17,8 +18,18 @@
 //! reads the current time from the clock the [`Options`] name; and `call`,
 //! which calls a function the [`Options`] pass in by name
 //! ([`Options::function`]) or one of the reference's library functions
-//! (the string, list, math, date and JSON functions). Every other opcode is refused as `unknown_instruction`, and
-//! the retired `and` and `or` as `retired_opcode`. The compiler is to come.
+//! (the string, list, math, date and JSON functions); `store` and `pop`;
+//! `jump` and `pop_jump_if_falsy`; and `jump_backward`, each back edge
+//! spending one of the run's loop budget ([`Options::loop_budget`]). Every
+//! other opcode is refused as `unknown_instruction`, and the retired `and`
+//! and `or` as `retired_opcode`. The compiler is to come.
+//!
+//! [`execute`] and [`execute_value`] run the same instructions as a
+//! statement program: the answer is an [`Execution`], the context the run
+//! leaves (a new value; the one passed in is never changed) with the roots
+//! it stored into, or a [`Stopped`], the error a run stopped on with the
+//! context as of its last completed statement. A store into a root the
+//! [`Options`] protect ([`Options::protected_roots`]) is refused.
 //!
 //! With the `serde` feature (off by default), [`Value`] implements
 //! `Serialize` and `Deserialize` in the tagged encoding, and [`Date`],
@@ -34,6 +45,7 @@ mod compare;
 mod context;
 mod error;
 mod evaluator;
+mod execution;
 mod instructions;
 mod json;
 mod map;
@@ -48,7 +60,8 @@ pub use context::Context;
 pub use error::{
     Error, EvaluationError, ParseError, Position, TypeMismatchError, UndefinedVariableError,
 };
-pub use evaluator::evaluate;
+pub use evaluator::{evaluate, execute, execute_value};
+pub use execution::{Execution, Stopped};
 pub use instructions::Instructions;
 pub use map::{Key, Map};
 pub use options::{OnUnbound, Options};

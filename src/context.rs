@@ -36,6 +36,31 @@ impl Context {
         self.bindings.insert(name, value)
     }
 
+    /// The value bound to `key`, if the context binds it: how a caller reads
+    /// the context a statement program leaves ([`execute`](crate::execute)).
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Key, Value};
+    ///
+    /// let mut context = Context::new();
+    /// context.insert("score", Value::from(90));
+    /// assert_eq!(context.get(&Key::from("score")), Some(&Value::from(90)));
+    /// assert_eq!(context.get(&Key::from("other")), None);
+    /// ```
+    pub fn get(&self, key: &Key) -> Option<&Value> {
+        self.bindings.get(key)
+    }
+
+    /// The bindings, for a `store` to write.
+    pub(crate) fn bindings_mut(&mut self) -> &mut Map {
+        &mut self.bindings
+    }
+
+    /// The bindings, for a `store` to check its path against.
+    pub(crate) fn bindings(&self) -> &Map {
+        &self.bindings
+    }
+
     /// The value bound to the root `name`, if the context binds it.
     pub(crate) fn root(&self, name: &str) -> Option<&Value> {
         self.bindings.get_str(name)

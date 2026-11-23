@@ -2,7 +2,7 @@
 
 use crate::{DateTime, Value};
 use core::fmt;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What a `load` of a variable the context does not bind does.
 ///
@@ -64,6 +64,14 @@ type Random<'a> = Box<dyn Fn() -> u64 + Send + Sync + 'a>;
 /// cryptographic and must not be used where a guess at the next draw would
 /// matter.
 ///
+/// The loop budget ([`Options::loop_budget`]) is how many back edges (the
+/// `jump_backward` instruction) one run may take, 10,000 unless the options
+/// say otherwise; a run that has spent it fails at its next back edge with
+/// an [`EvaluationError`](crate::EvaluationError), reason
+/// `loop_budget_exceeded`. The protected roots
+/// ([`Options::protected_roots`]) are the context roots a statement program
+/// may not store into; [`evaluate`](crate::evaluate) does not read them.
+///
 /// ```
 /// use predicator_rs::{Date, DateTime, OnUnbound, Options};
 ///
@@ -80,12 +88,29 @@ type Random<'a> = Box<dyn Fn() -> u64 + Send + Sync + 'a>;
 ///     .random(|| 0);
 /// # let _ = hosted;
 /// ```
-#[derive(Default)]
 pub struct Options<'a> {
     pub(crate) on_unbound: OnUnbound,
     pub(crate) clock: Option<Clock<'a>>,
     pub(crate) functions: BTreeMap<String, HostFunction<'a>>,
     pub(crate) random: Option<Random<'a>>,
+    pub(crate) loop_budget: u64,
+    pub(crate) protected_roots: BTreeSet<String>,
+}
+
+/// How many back edges a run may take when the options do not say.
+pub(crate) const DEFAULT_LOOP_BUDGET: u64 = 10_000;
+
+impl Default for Options<'_> {
+    fn default() -> Self {
+        Options {
+            on_unbound: OnUnbound::default(),
+            clock: None,
+            functions: BTreeMap::new(),
+            random: None,
+            loop_budget: DEFAULT_LOOP_BUDGET,
+            protected_roots: BTreeSet::new(),
+        }
+    }
 }
 
 impl<'a> Options<'a> {
@@ -159,6 +184,65 @@ impl<'a> Options<'a> {
         self
     }
 
+    /// The same options with `budget` as how many back edges (the
+    /// `jump_backward` instruction) one run may take, in place of the
+    /// default 10,000. Every back edge a run takes spends one; a run that
+    /// reaches a back edge with none left fails there with an
+    /// [`EvaluationError`](crate::EvaluationError), reason
+    /// `loop_budget_exceeded`. A budget of 0 lets a run take no back edge.
+    /// A program with no back edge never spends any.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Instructions, Options, evaluate};
+    ///
+    /// let forever = Instructions::from_json(r#"[["lit",true],["pop_jump_if_falsy",2],["jump_backward",2]]"#)?;
+    /// let spent = evaluate(&forever, &Context::new(), &Options::new().loop_budget(3)).unwrap_err();
+    /// assert_eq!(spent.reason(), "loop_budget_exceeded");
+    /// # Ok::<(), predicator_rs::Error>(())
+    /// ```
+    #[must_use]
+    pub fn loop_budget(mut self, budget: u64) -> Options<'a> {
+        self.loop_budget = budget;
+        self
+    }
+
+    /// The same options with each of `roots` protected: a `store` whose
+    /// path's root is one of them is refused when it is reached, with an
+    /// [`EvaluationError`](crate::EvaluationError), reason `protected_root`,
+    /// that names the root ([`EvaluationError::root`](crate::EvaluationError::root)).
+    /// A root is protected whole: there is no protecting `a.b` while
+    /// leaving `a.c` writable. The check comes after the path's segments
+    /// are checked, so a malformed path still fails on its segment first.
+    /// The roots add to any these options already protect.
+    /// [`execute`](crate::execute) and
+    /// [`execute_value`](crate::execute_value) read them;
+    /// [`evaluate`](crate::evaluate) does not.
+    ///
+    /// ```
+    /// use predicator_rs::{Context, Error, Instructions, Options, execute};
+    ///
+    /// let program = Instructions::from_json(r#"[["lit","x"],["lit",1],["store",1],["lit","locked"],["lit",2],["store",1]]"#)?;
+    /// let stopped = execute(&program, &Context::new(), &Options::new().protected_roots(["locked"])).unwrap_err();
+    /// let Error::Evaluation(refusal) = stopped.error() else { unreachable!() };
+    /// assert_eq!((refusal.reason(), refusal.root()), ("protected_root", Some("locked")));
+    /// # Ok::<(), predicator_rs::Error>(())
+    /// ```
+    #[must_use]
+    pub fn protected_roots<I>(mut self, roots: I) -> Options<'a>
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        self.protected_roots
+            .extend(roots.into_iter().map(Into::into));
+        self
+    }
+
+    /// Whether these options protect the root `name`.
+    pub(crate) fn protects(&self, name: &str) -> bool {
+        self.protected_roots.contains(name)
+    }
+
     /// The host function these options pass under `name`, if any.
     pub(crate) fn host_function(&self, name: &str) -> Option<&HostFunction<'a>> {
         self.functions.get(name)
@@ -197,6 +281,8 @@ impl fmt::Debug for Options<'_> {
             .field("clock", &clock)
             .field("functions", &functions)
             .field("random", &random)
+            .field("loop_budget", &self.loop_budget)
+            .field("protected_roots", &self.protected_roots)
             .finish()
     }
 }
@@ -239,7 +325,9 @@ mod tests {
                     reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     Ok(Value::Null)
                 })
-                .random(|| draws.fetch_add(1, std::sync::atomic::Ordering::SeqCst)),
+                .random(|| draws.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+                .loop_budget(1)
+                .protected_roots(["p"]),
         );
         thread_safe(&crate::Context::new());
     }
@@ -255,7 +343,7 @@ mod tests {
         assert!(system.unix_seconds() > 1_790_000_000);
         assert_eq!(
             format!("{:?}", Options::new()),
-            "Options { on_unbound: Undefined, clock: \"system\", functions: [], random: \"default\" }"
+            "Options { on_unbound: Undefined, clock: \"system\", functions: [], random: \"default\", loop_budget: 10000, protected_roots: {} }"
         );
         assert_eq!(
             format!(
@@ -265,8 +353,10 @@ mod tests {
                     .function("b", |_| Ok(Value::Null))
                     .function("a", |_| Ok(Value::Null))
                     .random(|| 0)
+                    .loop_budget(5)
+                    .protected_roots(["q", "p"])
             ),
-            "Options { on_unbound: Undefined, clock: \"given\", functions: [\"a\", \"b\"], random: \"given\" }"
+            "Options { on_unbound: Undefined, clock: \"given\", functions: [\"a\", \"b\"], random: \"given\", loop_budget: 5, protected_roots: {\"p\", \"q\"} }"
         );
     }
 
@@ -288,5 +378,18 @@ mod tests {
             Some(7)
         );
         assert!(Options::new().random_source().is_none());
+    }
+
+    // Sabotage: with Default setting loop_budget to 0, this test fails.
+    #[test]
+    fn the_loop_budget_defaults_to_ten_thousand_and_protected_roots_add_up() {
+        assert_eq!(Options::new().loop_budget, 10_000);
+        assert_eq!(Options::new().loop_budget(0).loop_budget, 0);
+        let options = Options::new()
+            .protected_roots(["a"])
+            .protected_roots(vec![String::from("b")]);
+        assert!(options.protects("a") && options.protects("b"));
+        assert!(!options.protects("c"));
+        assert!(!Options::new().protects("a"));
     }
 }
