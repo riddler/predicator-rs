@@ -6,6 +6,11 @@ use crate::{Error, ParseError, Value, tagged};
 /// member names the opcode and whose other members are its operands, as the
 /// reference's instruction-set text defines it.
 ///
+/// One is made by compiling a source ([`compile`](crate::compile),
+/// [`compile_program`](crate::compile_program)) or by reading its JSON
+/// form ([`Instructions::from_json`]), and written back to that form by
+/// [`Instructions::to_json`].
+///
 /// An instruction is read when the evaluator reaches it, as the reference
 /// reads it: an instruction that is not a list, names no opcode the build
 /// runs or carries operands of the wrong shape is refused then, with the
@@ -56,6 +61,28 @@ impl Instructions {
             .into()),
         }
     }
+
+    /// Writes the instruction list as JSON text in the conformance corpus's
+    /// tagged-value encoding (the [`tagged`] module), the text
+    /// [`Instructions::from_json`] reads back: no whitespace, an undefined,
+    /// a date, an instant or a duration operand carried as its tag. It needs
+    /// no feature.
+    ///
+    /// A list this crate compiled or read is always written. The refusals
+    /// are [`tagged::encode`]'s, each an [`Error::Evaluation`].
+    ///
+    /// ```
+    /// use predicator_rs::{Instructions, compile};
+    ///
+    /// let instructions = compile("x == undefined")?;
+    /// let text = instructions.to_json()?;
+    /// assert_eq!(text, r#"[["load","x"],["lit",{"$type":"undefined"}],["compare","EQ"]]"#);
+    /// assert_eq!(Instructions::from_json(&text)?, instructions);
+    /// # Ok::<(), predicator_rs::Error>(())
+    /// ```
+    pub fn to_json(&self) -> Result<String, Error> {
+        tagged::encode(&Value::List(self.list.clone()))
+    }
 }
 
 #[cfg(test)]
@@ -84,6 +111,21 @@ mod tests {
         assert_eq!(
             Instructions::from_json("[").unwrap_err().reason(),
             "malformed_json"
+        );
+    }
+
+    // to_json writes the tagged encoding from_json reads, every tag included,
+    // so a list read and written comes back as the same text.
+    // Sabotage: with to_json leaving out the list's last instruction, this
+    // test fails on the round trip.
+    #[test]
+    fn to_json_writes_what_from_json_reads() {
+        let text = r#"[["lit",{"$type":"undefined"}],["lit",[{"$type":"date","value":"2026-01-02"},{"$type":"datetime","value":"2026-01-02T03:04:05.500000Z"},1.5]],["lit",{"$type":"duration","value":{"days":3,"hours":0,"minutes":0,"months":0,"seconds":0,"weeks":0,"years":0}}],["call","f",2]]"#;
+        let read = Instructions::from_json(text).unwrap();
+        assert_eq!(read.to_json().unwrap(), text);
+        assert_eq!(
+            Instructions::from_json("[]").unwrap().to_json().unwrap(),
+            "[]"
         );
     }
 }

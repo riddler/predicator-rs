@@ -296,11 +296,11 @@ fn the_runner_answers_every_case_of_each_surface_and_skips_none() {
         assert_eq!(report.corpus_hash, CORPUS_HASH);
         assert_eq!(report.tier, 10);
     }
-    // The crate has no compiler yet: every compiler case fails naming it.
+    // The compiler answers every case of its set, each a pass.
     assert!(reports[0].results.iter().all(|result| *result
         == CaseResult {
             id: result.id.clone(),
-            outcome: Outcome::Fail("compiler not implemented".to_owned()),
+            outcome: Outcome::Pass,
         }));
     // The evaluator answers each case: a pass, or a fail saying why.
     let evaluated = |id: &str| {
@@ -329,7 +329,7 @@ fn the_runner_answers_every_case_of_each_surface_and_skips_none() {
 // Sabotage: with registry::encode writing an entry's surface before its
 // case_id, this test fails on the encoding check.
 #[test]
-fn the_vendored_registry_passes_and_claims_the_evaluator_at_tier_ten() {
+fn the_vendored_registry_passes_and_claims_both_surfaces_at_tier_ten() {
     let corpus = corpus();
     let bytes = std::fs::read(root().join(registry::FILE)).unwrap();
     assert_eq!(
@@ -339,16 +339,25 @@ fn the_vendored_registry_passes_and_claims_the_evaluator_at_tier_ten() {
     let parsed = registry::parse(&bytes).unwrap();
     assert_eq!(
         parsed.claims,
-        vec![ratchet::parse_claim("evaluator:10").unwrap()]
+        vec![
+            ratchet::parse_claim("compiler:10").unwrap(),
+            ratchet::parse_claim("evaluator:10").unwrap()
+        ]
     );
     assert_eq!(parsed.corpus_hash, CORPUS_HASH);
+    // Every case with a source has a compiler entry: 428 of the 475, the
+    // statement and loop tiers (6, 8 and 9) holding none.
+    assert_eq!(corpus.surface_set("compiler").len(), 428);
+    assert!(registry::unentered(&corpus, "compiler", &parsed).is_empty());
+    let unentered = registry::unentered(&corpus, "evaluator", &parsed);
+    let evaluator_entries = parsed
+        .entries
+        .iter()
+        .filter(|entry| entry.surface == "evaluator")
+        .count();
     assert_eq!(
-        registry::unentered(&corpus, "compiler", &parsed).len(),
-        corpus.surface_set("compiler").len()
-    );
-    assert_eq!(
-        registry::unentered(&corpus, "evaluator", &parsed).len(),
-        corpus.surface_set("evaluator").len() - parsed.entries.len()
+        unentered.len(),
+        corpus.surface_set("evaluator").len() - evaluator_entries
     );
     // An empty array keeps its brackets on their own lines.
     assert!(registry::encode(&empty_registry(&corpus)).starts_with("{\n\"claims\": [\n],\n"));
@@ -757,4 +766,39 @@ fn a_case_value_the_codec_refuses_fails_the_load() {
     });
     let error = Corpus::load(&dir).unwrap_err();
     assert!(error.contains("context: invalid_tagged_value"), "{error}");
+}
+
+// Every case with a source evaluates from its source, the public entry point
+// compiling it, to what the case expects: the result, or the error's type
+// and reason.
+// Sabotage: with the sealed program trait compiling a source for evaluate
+// as a statement program, this test fails on every case.
+#[test]
+fn every_case_with_a_source_evaluates_from_it_as_expected() {
+    let corpus = corpus();
+    let mut differing = Vec::new();
+    for case in corpus.surface_set("compiler") {
+        let Value::Map(bindings) = &case.context else {
+            panic!("{}: the context is not a map", case.id);
+        };
+        let answer = predicator_rs::evaluate(
+            case.source.as_deref().unwrap(),
+            &predicator_rs::Context::from(bindings.clone()),
+            &predicator_rs::Options::new(),
+        );
+        let matches = match (&case.expected, &answer) {
+            (Expected::Result(want), Ok(got)) => want == got,
+            (Expected::Error { kind, reason }, Err(error)) => {
+                error.type_name() == kind && error.reason() == reason
+            }
+            _ => false,
+        };
+        if !matches {
+            differing.push(format!(
+                "{}: expected {:?}, got {answer:?}",
+                case.id, case.expected
+            ));
+        }
+    }
+    assert!(differing.is_empty(), "{}", differing.join("\n"));
 }

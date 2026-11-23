@@ -228,7 +228,9 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    /// The token's type as the reference names it.
+    /// The token's type as the reference names it, which the token
+    /// transcript names each token by; only the lexer's tests read it.
+    #[cfg(test)]
     pub(crate) fn name(&self) -> &'static str {
         match self {
             Kind::Identifier(_) => "identifier",

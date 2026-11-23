@@ -91,8 +91,26 @@ nothing. The fix is to restore the copied bytes, or to vendor a new tag.
 The runner reads every case of every tier on the evaluator surface, and every
 case whose `source` is not null on the compiler surface, with no skip list; a
 case carrying a key `schema/corpus.json` does not name is refused rather than
-half-read, as is a case whose tier is not its file's and an id seen twice. Each case is answered pass or fail; until the crate has an
-evaluator and a compiler, every case fails naming the missing surface.
+half-read, as is a case whose tier is not its file's and an id seen twice.
+Each case is answered pass or fail. The evaluator surface runs the case's
+instructions over its context; the compiler surface compiles its source with
+`compile` and compares the instruction list, operand by operand, with the
+case's. Tiers 6, 8 and 9 (statements, control flow and loops) hold no case
+with a source, so the compiler's claim of tier 10 covers them with no entry.
+
+`tests/compile_transcript.rs` answers four of the compile transcript's five
+kinds of row: a compile row and a program row by the instruction list
+`compile` or `compile_program` answers, a refusal row by its reason, message
+and position, and a program refusal row by its message and position. The
+counts are the transcript record's (`transcript/compile-SOURCE.json`): 63
+compile, 35 program, 27 refusal and 29 program refusal rows. Its 45
+decompile rows render a tree back to source text, which this crate has no
+function for: they are out of scope until decompiling exists, and the test
+counts them rather than answering them. A program row also records the
+source span behind each instruction; the crate keeps no such table, so the
+spans are not compared. Every row of those four kinds was checked against
+the reference at the tag `SOURCE.json` names and none answers differently,
+so `transcript/SUPERSEDED.json` lists none of them.
 
 `mise run gate:registry`, also a stage of the full gate, holds
 `registry.json` to the checks the reference's `RATCHET.md` gives a registry:
@@ -111,7 +129,7 @@ claim only when the entries support it. Claims are asserted through an
 environment variable:
 
 ```bash
-PREDICATOR_RATCHET_CLAIMS="evaluator:1" mise run ratchet
+PREDICATOR_RATCHET_CLAIMS="compiler:10 evaluator:10" mise run ratchet
 ```
 
 ## The contract

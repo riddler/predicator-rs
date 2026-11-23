@@ -36,33 +36,61 @@ use crate::{
 use arithmetic::Arithmetic;
 use cast::Target;
 use presence::Presence;
+use sealed::Mode;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
 
 /// The program an entry point is given: what can be run as an instruction
-/// list. The trait is sealed; it is implemented for `&Instructions`.
+/// list. The trait is sealed; it is implemented for `&Instructions`, which
+/// runs as it is, and for `&str`, a source, which [`evaluate`] compiles as
+/// an expression ([`compile`](crate::compile)) and [`execute`] and
+/// [`execute_value`] as a statement program
+/// ([`compile_program`](crate::compile_program)) before it runs.
 pub trait Program: sealed::Sealed {}
 
 mod sealed {
-    use crate::{Error, Instructions};
+    use crate::{Error, Instructions, compile, compile_program};
     use std::borrow::Cow;
+
+    /// How an entry point reads a source: as one expression or as a
+    /// statement program.
+    #[derive(Debug, Clone, Copy)]
+    pub enum Mode {
+        /// [`evaluate`](crate::evaluate)'s reading.
+        Expression,
+        /// [`execute`](crate::execute)'s and
+        /// [`execute_value`](crate::execute_value)'s reading.
+        Statements,
+    }
 
     /// The one method a program has: the instruction list it runs.
     pub trait Sealed {
         /// The instruction list, or the error that stops it being one.
-        fn resolve(&self) -> Result<Cow<'_, Instructions>, Error>;
+        fn resolve(&self, mode: Mode) -> Result<Cow<'_, Instructions>, Error>;
     }
 
     impl Sealed for &Instructions {
-        fn resolve(&self) -> Result<Cow<'_, Instructions>, Error> {
+        fn resolve(&self, _mode: Mode) -> Result<Cow<'_, Instructions>, Error> {
             Ok(Cow::Borrowed(*self))
+        }
+    }
+
+    impl Sealed for &str {
+        fn resolve(&self, mode: Mode) -> Result<Cow<'_, Instructions>, Error> {
+            match mode {
+                Mode::Expression => compile(self),
+                Mode::Statements => compile_program(self),
+            }
+            .map(Cow::Owned)
         }
     }
 }
 
 impl Program for &Instructions {}
+
+impl Program for &str {}
 
 /// One instruction, its operands read.
 #[derive(Debug)]
@@ -98,13 +126,13 @@ enum Op<'a> {
 
 /// One row of the dispatch table: an opcode's name and the reader of its
 /// operands, which answers `None` for operands of the wrong shape.
-struct Row {
-    name: &'static str,
+pub(crate) struct Row {
+    pub(crate) name: &'static str,
     read: for<'a> fn(&'a [Value]) -> Option<Op<'a>>,
 }
 
 /// Every opcode this build runs.
-const OPCODES: &[Row] = &[
+pub(crate) const OPCODES: &[Row] = &[
     Row {
         name: "lit",
         read: read_lit,
@@ -790,7 +818,9 @@ fn unbound(name: &str) -> UndefinedVariableError {
 /// Evaluates `program` over `context` and answers the value it leaves on
 /// top of the stack.
 ///
-/// The program is an `&`[`Instructions`]. It runs in expression mode, as the
+/// The program is an `&`[`Instructions`], or a `&str` source compiled as an
+/// expression ([`compile`](crate::compile)); a source that does not compile
+/// is refused with its [`Error::Parse`]. It runs in expression mode, as the
 /// reference's instruction-set text states it: from its first instruction
 /// to its end, and its answer is the top of the stack (a run that ends with
 /// nothing on it fails with the reason `empty_stack`).
@@ -831,7 +861,7 @@ pub fn evaluate<P: Program>(
     context: &Context,
     options: &Options,
 ) -> Result<Value, Error> {
-    let instructions = program.resolve()?;
+    let instructions = program.resolve(Mode::Expression)?;
     context.check()?;
     let mut machine = Machine::new(context, options, false);
     let outcome = machine.run(&instructions.list).and_then(|()| {
@@ -875,7 +905,7 @@ fn statements<P: Program>(
         context: context.clone(),
         stored_roots: Vec::new(),
     };
-    let instructions = program.resolve().map_err(refused)?;
+    let instructions = program.resolve(Mode::Statements).map_err(refused)?;
     context.check().map_err(|error| refused(error.into()))?;
     let mut machine = Machine::new(context, options, true);
     let outcome = machine.run(&instructions.list);
@@ -904,8 +934,11 @@ fn statements<P: Program>(
 /// Runs `program` over `context` as a statement program and answers the
 /// context it leaves, with the roots it stored into.
 ///
-/// The program is an `&`[`Instructions`]. It runs in statement mode, as the
-/// reference's instruction-set text states it: from its first instruction
+/// The program is an `&`[`Instructions`], or a `&str` source compiled as a
+/// statement program ([`compile_program`](crate::compile_program)); a
+/// source that does not compile stops before anything runs, the [`Stopped`]
+/// holding its [`Error::Parse`] and the context passed in. It runs in
+/// statement mode, as the reference's instruction-set text states it: from its first instruction
 /// to its end, its `store`s writing a copy of `context` (the one passed in
 /// is never changed), and what is left on the stack at the end is
 /// discarded. A run answers an [`Execution`]: the context it left and
